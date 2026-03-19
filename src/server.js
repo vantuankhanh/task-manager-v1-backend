@@ -32,10 +32,10 @@ const app = require("fastify")({
 
 // Apply CORS middleware globally
 app.register(cors, {
-  //   origin: "*",
-  //   methods: ["GET", "POST", "PUT", "DELETE"],
-  //   allowedHeaders: ["Content-Type", "Authorization"],
-  //   credentials: true,
+  origin: "*",
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
 });
 
 // Rate-Limit
@@ -51,15 +51,15 @@ app.register(rateLimit, {
 const swaggerOptions = {
   swagger: {
     info: {
-      title: "Mockproject API Documentation",
-      description: "My Description",
+      title: "Task Management API Documentation",
+      description: "Task Management API Documentation",
       version: "1.0.0",
     },
     host: "localhost",
     schemes: ["http", "https"],
     consumes: ["application/json"],
     produces: ["application/json"],
-    tags: [{name: "Design API", description: "Code related end-points"}],
+    tags: [{name: "Task Management API", description: "Task Management API"}],
   },
 };
 const swaggerUiOptions = {
