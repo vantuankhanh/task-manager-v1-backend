@@ -1,4 +1,4 @@
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const logger = require("../loggers/loggers.config");
 
 // Sử dụng hàm hash của bcrypt để băm mật khẩu
