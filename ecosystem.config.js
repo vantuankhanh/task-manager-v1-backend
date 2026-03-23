@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: "task-manager-backend",
+      name: "task-manager-v1-backend",
       script: "./src/server.js",
       instances: "max",
       exec_mode: "cluster",
