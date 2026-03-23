@@ -71,7 +71,7 @@ app.register(fastifySwaggerUi, swaggerUiOptions);
 
 // ROUTER
 app.get("/", async (req, res) => {
-  res.send({hello: "Home Page with Fastify"});
+  res.send("Task Management V1 Backend");
 });
 app.register(allRouter, {prefix: "/api"});
 

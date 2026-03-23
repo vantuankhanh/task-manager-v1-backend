@@ -15,10 +15,6 @@ const PutUser = require("../controllers/users/putUser.controller");
 const VerifyToken = require("../middlewares/verifyToken");
 
 const router = (router, opts, next) => {
-  router.get("/", async (req, res) => {
-    res.send({hello: "Home Page with Fastify"});
-  });
-
   // Auth
   router.post("/login", Login);
   router.get("/refresh-token", RefreshToken);
