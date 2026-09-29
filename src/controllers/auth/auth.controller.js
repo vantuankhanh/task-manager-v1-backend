@@ -70,9 +70,11 @@ const RefreshToken = async (req, res) => {
       return {code: 401, message: "Unauthorized"};
     }
 
-    const decodedJWT = jwt.decode(token);
-    const refresh_token = GenerateRefreshToken({name: decodedJWT.user_name, email: decodedJWT.email, role: decodedJWT.role});
-    return {refresh_token: refresh_token};
+    // Only a refresh token signed with the refresh secret is accepted; jwt.verify
+    // throws on a bad signature, alg "none" or expiry and lands in the catch below
+    const verifiedJWT = jwt.verify(token, process.env.REFRESH_TOKEN, {algorithms: ["HS256"]});
+    const payload = {name: verifiedJWT.name, email: verifiedJWT.email, role: verifiedJWT.role};
+    return {access_token: GenerateAccessToken(payload), refresh_token: GenerateRefreshToken(payload)};
   } catch (error) {
     logger.error(error);
     res.status(401);
