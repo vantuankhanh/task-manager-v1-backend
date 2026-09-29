@@ -18,7 +18,7 @@ const VerifyToken = (req, res, next) => {
       res.status(401).send({code: 401, message: "Unauthorized"}).end();
     }
 
-    jwt.verify(token, process.env.SECRET_TOKEN, (err, decoded) => {
+    jwt.verify(token, process.env.ACCESS_TOKEN, (err, decoded) => {
       if (err) {
         res.status(401).send({code: 401, message: "JWT expired"}).end();
       }
