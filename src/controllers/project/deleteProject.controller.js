@@ -20,16 +20,16 @@ const DeleteProject = async (req, res, next) => {
     }
 
     // Check id có trong CSDL hay khong
-    const checkId = await QueryDatabase(`SELECT * FROM project WHERE id=${"'" + id + "'"}`);
+    const checkId = await QueryDatabase(`SELECT id FROM project WHERE id = $1`, [id]);
     if (checkId.rowCount === 0) {
       res.status(400);
       return {code: 400, message: "Project not found"};
     }
 
     const sql = `
-      DELETE FROM project WHERE id='${id}';
+      DELETE FROM project WHERE id = $1;
     `;
-    await QueryDatabase(sql);
+    await QueryDatabase(sql, [id]);
     return {code: 200, message: "Delete Project success"};
   } catch (error) {
     logger.error(error);

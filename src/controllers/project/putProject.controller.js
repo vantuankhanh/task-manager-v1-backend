@@ -27,15 +27,15 @@ const PutProject = async (req, res, next) => {
 
     const sql = `
       UPDATE project 
-      SET name =  '${name}', 
-      payment =  '${payment}', 
-      time_start = '${time_start}', 
-      time_end = '${time_end}', 
-      note = '${note}', 
-      priority = '${priority}'
-      WHERE id =  '${id}'
+      SET name = $1,
+      payment = $2,
+      time_start = $3,
+      time_end = $4,
+      note = $5,
+      priority = $6
+      WHERE id = $7
     `;
-    await QueryDatabase(sql);
+    await QueryDatabase(sql, [name, payment, time_start, time_end, note, priority, id]);
     return {code: 200, message: "Update project success"};
   } catch (error) {
     logger.error(error);

@@ -10,8 +10,8 @@ const CreateUser = async (req, res, next) => {
     const password = escape(req.body.password);
 
     // Check user+email ko được trùng với cái đã có trong hệ thống
-    const checkEmail = await QueryDatabase(`SELECT * FROM "user" WHERE email='${email}'`);
-    const checkName = await QueryDatabase(`SELECT * FROM "user" WHERE name='${name}'`);
+    const checkEmail = await QueryDatabase(`SELECT id FROM "user" WHERE email = $1`, [email]);
+    const checkName = await QueryDatabase(`SELECT id FROM "user" WHERE name = $1`, [name]);
     if (checkEmail.rowCount > 0) {
       res.status(400);
       return {code: 400, message: "Email already exists"};
@@ -25,10 +25,10 @@ const CreateUser = async (req, res, next) => {
 
     const sql = `
       INSERT INTO "user" (name, email, password , role) 
-      VALUES ('${name}', '${email}', '${hashedPassword}','0');
+      VALUES ($1, $2, $3, '0');
     `;
 
-    await QueryDatabase(sql);
+    await QueryDatabase(sql, [name, email, hashedPassword]);
     return {code: 200, message: "Create user success"};
   } catch (error) {
     logger.error(error);

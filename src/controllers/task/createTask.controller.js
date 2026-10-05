@@ -20,22 +20,16 @@ const CreateTask = async (req, res, next) => {
     const note = escape(req.body.note);
 
     // Check email + project_id phải trùng với cái đã có trong CSDL
-    const checkEmail = await QueryDatabase(`SELECT * FROM "user" WHERE email='${req.body.user_mail}'`);
-    const checkProjectId = await QueryDatabase(`SELECT * FROM project WHERE id=${"'" + req.body.project_id + "'"}`);
+    // So với email đã escape như lúc lưu
+    const checkEmail = await QueryDatabase(`SELECT id FROM "user" WHERE email = $1`, [user_mail]);
+    const checkProjectId = await QueryDatabase(`SELECT id FROM project WHERE id = $1`, [project_id]);
 
     if (checkEmail.rowCount > 0 && checkProjectId.rowCount > 0 && isValidUuid == true) {
       const sql = `
         INSERT INTO Task ("user_mail", "project_id", "time_start", "time_end", "status", "note") 
-        VALUES (
-          '${user_mail}',
-          '${project_id}',
-          '${time_start}',
-          '${time_end}',
-          '${status}',
-          '${note}'
-        );
+        VALUES ($1, $2, $3, $4, $5, $6);
       `;
-      await QueryDatabase(sql);
+      await QueryDatabase(sql, [user_mail, project_id, time_start, time_end, status, note]);
       return {code: 200, message: "Create task success"};
     } else {
       res.status(400);
