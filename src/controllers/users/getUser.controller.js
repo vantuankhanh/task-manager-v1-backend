@@ -1,14 +1,21 @@
 const escape = require("escape-html");
 const QueryDatabase = require("../../utils/queryDatabase");
 const logger = require("../../loggers/loggers.config");
+const {IsAdmin} = require("../../middlewares/authorize");
 
 const GetUser = async (req, res, next) => {
   try {
-    const sql = `
+    // Admin: every user. Normal user: only their own row
+    const isAdmin = await IsAdmin(req);
+    const sql = isAdmin
+      ? `
       SELECT * FROM "user";
+    `
+      : `
+      SELECT * FROM "user" WHERE email = $1;
     `;
 
-    const data = await QueryDatabase(sql);
+    const data = await QueryDatabase(sql, isAdmin ? [] : [req.user.email]);
     res.send(
       data.rows.map((row) => {
         delete row.password;
@@ -25,11 +32,17 @@ const GetUser = async (req, res, next) => {
 const GetUserById = async (req, res, next) => {
   try {
     const id = escape(req.params.id);
-    const sql = `
-      SELECT * FROM "user" WHERE id = '${id}'
+    // Admin: any user. Normal user: only their own row (empty list for anyone else)
+    const isAdmin = await IsAdmin(req);
+    const sql = isAdmin
+      ? `
+      SELECT * FROM "user" WHERE id = $1
+    `
+      : `
+      SELECT * FROM "user" WHERE id = $1 AND email = $2
     `;
 
-    const data = await QueryDatabase(sql);
+    const data = await QueryDatabase(sql, isAdmin ? [id] : [id, req.user.email]);
     res.send(
       data.rows.map((row) => {
         delete row.password;

@@ -13,6 +13,14 @@ const DeleteUser = require("../controllers/users/deleteUser.controller");
 const {GetUser, GetUserById} = require("../controllers/users/getUser.controller");
 const PutUser = require("../controllers/users/putUser.controller");
 const VerifyToken = require("../middlewares/verifyToken");
+const {RequireAdmin, RequireOwnEmailOrAdmin} = require("../middlewares/authorize");
+
+// Any signed-in user; the controller narrows the result to the caller's own data when the caller is not an admin
+const signedIn = {onRequest: [VerifyToken]};
+// Admin only (the screens and buttons the frontend shows to admins only)
+const adminOnly = {onRequest: [VerifyToken, RequireAdmin]};
+// A normal user only for their own email (taken from the URL or the body), an admin for anyone
+const ownEmailOrAdmin = (getEmail) => ({onRequest: [VerifyToken], preHandler: [RequireOwnEmailOrAdmin(getEmail)]});
 
 const router = (router, opts, next) => {
   // Auth
@@ -20,33 +28,45 @@ const router = (router, opts, next) => {
   router.get("/refresh-token", RefreshToken);
 
   // User
-  router.get("/user", {onRequest: [VerifyToken]}, GetUser);
-  router.get("/user/:id", {onRequest: [VerifyToken]}, GetUserById);
+  router.get("/user", signedIn, GetUser);
+  router.get("/user/:id", signedIn, GetUserById);
   router.post("/user", CreateUser);
-  router.delete("/user", {onRequest: [VerifyToken]}, DeleteUser);
-  router.put("/user", {onRequest: [VerifyToken]}, PutUser);
-  router.put("/user/changerole", {onRequest: [VerifyToken]}, ChangeRoleUser);
+  router.delete("/user", adminOnly, DeleteUser);
+  router.put(
+    "/user",
+    ownEmailOrAdmin((req) => req.body?.email),
+    PutUser,
+  );
+  router.put("/user/changerole", adminOnly, ChangeRoleUser);
 
   // Project
-  router.get("/project", {onRequest: [VerifyToken]}, GetProject);
-  router.get("/project/:id", {onRequest: [VerifyToken]}, GetProjectById);
-  router.post("/project", {onRequest: [VerifyToken]}, CreateProject);
-  router.delete("/project", {onRequest: [VerifyToken]}, DeleteProject);
-  router.put("/project", {onRequest: [VerifyToken]}, PutProject);
+  router.get("/project", signedIn, GetProject);
+  router.get("/project/:id", signedIn, GetProjectById);
+  router.post("/project", adminOnly, CreateProject);
+  router.delete("/project", adminOnly, DeleteProject);
+  router.put("/project", adminOnly, PutProject);
 
   // Task
-  router.get("/task", {onRequest: [VerifyToken]}, GetTask);
-  router.get("/task/:id", {onRequest: [VerifyToken]}, GetTaskById); //GetTaskDetail
-  router.post("/task", {onRequest: [VerifyToken]}, CreateTask);
-  router.delete("/task", {onRequest: [VerifyToken]}, DeleteTask);
-  router.put("/task", {onRequest: [VerifyToken]}, PutTask);
+  router.get("/task", adminOnly, GetTask);
+  router.get("/task/:id", signedIn, GetTaskById); //GetTaskDetail
+  router.post("/task", adminOnly, CreateTask);
+  router.delete("/task", adminOnly, DeleteTask);
+  router.put("/task", signedIn, PutTask);
 
   // GetTaskBy.......
-  router.get("/gettaskbyprojectid/:id", {onRequest: [VerifyToken]}, GetTaskByProjectId); //GetTaskByProjectId
-  router.get("/gettaskbyuser/:name", {onRequest: [VerifyToken]}, GetTaskByUser); //GetTaskByUser
+  router.get("/gettaskbyprojectid/:id", adminOnly, GetTaskByProjectId); //GetTaskByProjectId
+  router.get(
+    "/gettaskbyuser/:name",
+    ownEmailOrAdmin((req) => req.params.name),
+    GetTaskByUser,
+  ); //GetTaskByUser
 
   // GetProjectBy.......
-  router.get("/getprojectbyuser/:email", {onRequest: [VerifyToken]}, GetProjectByUser); //GetProjectByUser
+  router.get(
+    "/getprojectbyuser/:email",
+    ownEmailOrAdmin((req) => req.params.email),
+    GetProjectByUser,
+  ); //GetProjectByUser
 
   next();
 };

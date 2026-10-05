@@ -1,6 +1,7 @@
 const escape = require("escape-html");
 const logger = require("../../loggers/loggers.config");
 const QueryDatabase = require("../../utils/queryDatabase");
+const {IsAdmin} = require("../../middlewares/authorize");
 const {v4: uuidv4, validate: validateUuid} = require("uuid");
 
 const GetTask = async (req, res, next) => {
@@ -36,10 +37,14 @@ const GetTaskById = async (req, res, next) => {
       FROM Task a 
       INNER JOIN "user" b ON a."user_mail" = b."email"
       INNER JOIN project c ON a."project_id" = c."id"
-      WHERE a.id = '${id}'
+      WHERE a.id = $1
     `;
 
-    const data = await QueryDatabase(sql);
+    // Admin: any task. Normal user: only their own task (empty list otherwise)
+    const isAdmin = await IsAdmin(req);
+    const data = isAdmin
+      ? await QueryDatabase(sql, [id])
+      : await QueryDatabase(`${sql} AND a."user_mail" = $2`, [id, req.user.email]);
     return data.rows;
   } catch (error) {
     logger.error(error);
@@ -64,9 +69,9 @@ const GetTaskByProjectId = async (req, res, next) => {
       FROM Task a 
       INNER JOIN "user" b ON a."user_mail" = b."email"
       INNER JOIN project c ON a."project_id" = c."id"
-      WHERE c.id = '${id}'
+      WHERE c.id = $1
     `;
-    const data = await QueryDatabase(sql);
+    const data = await QueryDatabase(sql, [id]);
     // if (data.rowCount === 0) {
     //   return {code: 200, message: "No task found"};
     // }
@@ -86,9 +91,9 @@ const GetTaskByUser = async (req, res, next) => {
       FROM Task a 
       INNER JOIN "user" b ON a."user_mail" = b."email"
       INNER JOIN project c ON a."project_id" = c."id"
-      WHERE b."email" = '${user_name}'
+      WHERE b."email" = $1
     `;
-    const data = await QueryDatabase(sql);
+    const data = await QueryDatabase(sql, [user_name]);
     // if (data.rowCount === 0) {
     //   return {code: 200, message: "No task found"};
     // }

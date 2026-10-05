@@ -1,6 +1,7 @@
 const escape = require("escape-html");
 const logger = require("../../loggers/loggers.config");
 const QueryDatabase = require("../../utils/queryDatabase");
+const {IsAdmin} = require("../../middlewares/authorize");
 const {v4: uuidv4, validate: validateUuid} = require("uuid");
 
 const PutTask = async (req, res, next) => {
@@ -25,17 +26,29 @@ const PutTask = async (req, res, next) => {
       return {code: 400, message: "Wrong format uuid"};
     }
 
+    // Normal user: only the status of their own task (the only field the frontend lets them edit)
+    if (!(await IsAdmin(req))) {
+      const checkOwnTask = await QueryDatabase(`SELECT id FROM task WHERE id = $1 AND user_mail = $2`, [id, req.user.email]);
+      if (checkOwnTask.rowCount === 0) {
+        res.status(403);
+        return {code: 403, message: "Forbidden"};
+      }
+
+      await QueryDatabase(`UPDATE task SET status = $1 WHERE id = $2`, [status, id]);
+      return {code: 200, message: "Update task success"};
+    }
+
     const sql = `
       UPDATE task 
-      SET user_mail = '${user_mail}', 
-      project_id = '${project_id}', 
-      time_start = '${time_start}', 
-      time_end = '${time_end}', 
-      status = '${status}', 
-      note = '${note}'
-      WHERE id = '${id}'
+      SET user_mail = $1,
+      project_id = $2,
+      time_start = $3,
+      time_end = $4,
+      status = $5,
+      note = $6
+      WHERE id = $7
     `;
-    await QueryDatabase(sql);
+    await QueryDatabase(sql, [user_mail, project_id, time_start, time_end, status, note, id]);
     return {code: 200, message: "Update task success"};
   } catch (error) {
     logger.error(error);
