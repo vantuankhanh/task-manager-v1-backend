@@ -24,6 +24,7 @@
     "@fastify/rate-limit": "^9.1.0",
     "@fastify/swagger": "^8.14.0",
     "@fastify/swagger-ui": "^3.0.0",
+    "@vtk-iam/node": "file:vendor/vtk-iam-node-0.1.0.tgz",
     "aws-sdk": "^2.1608.0",
     "axios": "^1.6.8",
     "bcryptjs": "^3.0.3",
