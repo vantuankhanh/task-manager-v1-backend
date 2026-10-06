@@ -11,6 +11,7 @@ const fastifySwaggerUi = require("@fastify/swagger-ui");
 const allRouter = require("./routes/routes");
 const {AUTH_MODE_IAM, GetAuthConfig} = require("./utils/authConfig");
 const {RegisterIam} = require("./middlewares/iamAuthenticate");
+const {RequestLogSerializers} = require("./loggers/requestLog");
 
 // AUTH_MODE=legacy|iam, read once here. Throws (and the server does not start) when iam mode misses a variable
 const authConfig = GetAuthConfig();
@@ -32,7 +33,8 @@ const stream = pretty({
 });
 const app = require("fastify")({
   serverFactory,
-  logger: pino(stream),
+  // The req serializer keeps the query string of /api/auth/ requests (one-time code, state) out of the log
+  logger: pino({serializers: RequestLogSerializers}, stream),
 });
 
 // CORS and sign-in, by AUTH_MODE
