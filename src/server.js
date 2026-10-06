@@ -9,6 +9,11 @@ const path = require("path");
 const fastifySwagger = require("@fastify/swagger");
 const fastifySwaggerUi = require("@fastify/swagger-ui");
 const allRouter = require("./routes/routes");
+const {AUTH_MODE_IAM, GetAuthConfig} = require("./utils/authConfig");
+const {RegisterIam} = require("./middlewares/iamAuthenticate");
+
+// AUTH_MODE=legacy|iam, read once here. Throws (and the server does not start) when iam mode misses a variable
+const authConfig = GetAuthConfig();
 
 // Create Server
 var server;
@@ -30,13 +35,21 @@ const app = require("fastify")({
   logger: pino(stream),
 });
 
-// Apply CORS middleware globally
-app.register(cors, {
-  origin: "*",
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true,
-});
+// CORS and sign-in, by AUTH_MODE
+let authenticate;
+if (authConfig.mode === AUTH_MODE_IAM) {
+  // CORS of the SDK for the frontend host only (instead of @fastify/cors), the sign-in routes at /api/auth
+  // and the hook that checks the access token of VTK IAM
+  authenticate = RegisterIam(app, authConfig.iam);
+} else {
+  // Apply CORS middleware globally
+  app.register(cors, {
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  });
+}
 
 // Rate-Limit
 app.register(rateLimit, {
@@ -73,7 +86,7 @@ app.register(fastifySwaggerUi, swaggerUiOptions);
 app.get("/", async (req, res) => {
   res.send("Task Management V1 Backend");
 });
-app.register(allRouter, {prefix: "/api"});
+app.register(allRouter, {prefix: "/api", authMode: authConfig.mode, authenticate});
 
 // Run the server!
 app.ready(() => {

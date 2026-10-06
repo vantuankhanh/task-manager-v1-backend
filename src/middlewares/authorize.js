@@ -7,9 +7,12 @@ const ROLE_ADMIN = 1;
 
 const replyForbidden = (res) => res.status(403).send({code: 403, message: "Forbidden"});
 
-// The role inside the token is the one from sign-in time and survives every refresh, so it can be stale
-// after a role change or a deleted account. The current role is read from the database instead
-// (one lookup per request, kept on req.user). Use after VerifyToken
+// AUTH_MODE=legacy: the role inside the token is the one from sign-in time and survives every refresh, so it
+// can be stale after a role change or a deleted account. The current role is read from the database instead
+// (one lookup per request, kept on req.user).
+// AUTH_MODE=iam: the IAM hook has already set req.user.isAdmin from the roles of the access token (the IAM
+// reads roles at every token issue), so nothing is read here.
+// Use after the authentication hook of the mode (VerifyToken or the IAM hook)
 const IsAdmin = async (req) => {
   if (req.user.isAdmin === undefined) {
     const data = await QueryDatabase(`SELECT role FROM "user" WHERE email = $1 LIMIT 1`, [req.user.email]);
