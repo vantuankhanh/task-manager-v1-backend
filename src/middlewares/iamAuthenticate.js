@@ -14,6 +14,27 @@ const FRONTEND_SIGN_IN_FAILED_PATH = "/auth/access";
 // The only values the reason parameter of the failed sign-in page ever takes
 const REASON_ACCESS_DENIED = "access_denied";
 const REASON_SIGN_IN_FAILED = "sign_in_failed";
+// The only prompt GET /api/auth/login passes on to the IAM (OpenID Connect prompt=login)
+const PROMPT_LOGIN = "login";
+
+// onSend hook for the sign-in routes. GET /login?prompt=login is "sign in with another account": the SDK
+// builds the authorization request without a prompt, so the IAM would sign the browser in again as the
+// account it still knows. With prompt=login added to that request the IAM shows its sign-in form instead,
+// and the account that signs in there replaces the session of the previous one.
+// The value is fixed: any other prompt, a repeated one or none leaves the redirect of the SDK as it is,
+// and nothing else of the query string reaches the IAM
+const CreateSignInWithAnotherAccountPrompt = () => {
+  return async (req, res, payload) => {
+    const isLogin = req.method === "GET" && req.routeOptions.url === `${AUTH_PREFIX}/login`;
+    if (!isLogin || res.statusCode !== 303 || req.query.prompt !== PROMPT_LOGIN) {
+      return payload;
+    }
+    const authorizationUrl = new URL(res.getHeader("location"));
+    authorizationUrl.searchParams.set("prompt", PROMPT_LOGIN);
+    res.header("location", authorizationUrl.href);
+    return payload;
+  };
+};
 
 // onSend hook for the sign-in routes. A browser is on GET /callback, so a failed sign-in must not end on
 // bare JSON on the API host: the answer of the SDK (403 when the IAM refused the user, as for a person
@@ -125,9 +146,10 @@ const RegisterIam = (app, iamConfig, overrides = {}) => {
   app.addHook("onRequest", corsHook(iamOptions));
 
   // GET /api/auth/login, GET /api/auth/callback, POST /api/auth/refresh, POST /api/auth/logout.
-  // The SDK routes sit in a scope of their own, so the hook around the callback touches nothing else
+  // The SDK routes sit in a scope of their own, so the hooks around the login and the callback touch nothing else
   app.register(
     async (authScope) => {
+      authScope.addHook("onSend", CreateSignInWithAnotherAccountPrompt());
       authScope.addHook("onSend", CreateFailedCallbackRedirect(iamConfig.frontendBaseUrl));
       authScope.register(authRoutesPlugin, iamOptions);
     },
@@ -142,4 +164,10 @@ const RegisterIam = (app, iamConfig, overrides = {}) => {
   return CreateIamAuthenticate({verifier, issuer: iamConfig.issuer, fetchUserinfo: overrides.fetchUserinfo});
 };
 
-module.exports = {IAM_ADMIN_ROLE, CreateIamAuthenticate, CreateFailedCallbackRedirect, RegisterIam};
+module.exports = {
+  IAM_ADMIN_ROLE,
+  CreateIamAuthenticate,
+  CreateFailedCallbackRedirect,
+  CreateSignInWithAnotherAccountPrompt,
+  RegisterIam,
+};

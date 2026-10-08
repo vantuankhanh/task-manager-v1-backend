@@ -651,6 +651,57 @@ describe("iam mode: sign-in routes of the SDK", () => {
     assert.equal(authorizationUrl.searchParams.get("redirect_uri"), `${API_BASE_URL}/api/auth/callback`);
     assert.equal(authorizationUrl.searchParams.get("client_id"), "taskmanager-v1");
     assert.match(String(response.headers["set-cookie"]), /iam_login=.*HttpOnly/);
+    assert.equal(authorizationUrl.searchParams.has("prompt"), false, "a normal sign-in may reuse the session at the IAM");
+  });
+
+  it("GET /api/auth/login?prompt=login asks the IAM for its sign-in form and changes nothing else of the request", async () => {
+    const response = await iamApp.inject({method: "GET", url: "/api/auth/login?returnTo=/tasks&prompt=login"});
+    assert.equal(response.statusCode, 303);
+    const authorizationUrl = new URL(response.headers.location);
+    assert.equal(authorizationUrl.origin + authorizationUrl.pathname, `${fakeIam.issuer}/oauth2/authorize`);
+    assert.deepEqual(authorizationUrl.searchParams.getAll("prompt"), ["login"]);
+    assert.equal(authorizationUrl.searchParams.get("redirect_uri"), `${API_BASE_URL}/api/auth/callback`);
+    assert.equal(authorizationUrl.searchParams.get("client_id"), "taskmanager-v1");
+    assert.equal(authorizationUrl.searchParams.get("code_challenge_method"), "S256");
+    for (const parameterName of ["state", "nonce", "code_challenge"]) {
+      assert.ok(authorizationUrl.searchParams.get(parameterName), parameterName);
+    }
+    assert.match(String(response.headers["set-cookie"]), /iam_login=.*HttpOnly/);
+  });
+
+  it("GET /api/auth/login passes no other prompt and no other parameter of its query string on to the IAM", async () => {
+    const parameterNamesOfNormalSignIn = [
+      ...new URL((await iamApp.inject({method: "GET", url: "/api/auth/login"})).headers.location).searchParams.keys(),
+    ].sort();
+    const refusedQueries = [
+      "prompt=none",
+      "prompt=select_account",
+      "prompt=consent",
+      "prompt=LOGIN",
+      "prompt=",
+      "prompt=login%20none",
+      "prompt=login&prompt=login",
+      "prompt=login&prompt=none",
+      "prompt[]=login",
+      `prompt=${encodeURIComponent("login&redirect_uri=https://evil.example/")}`,
+      "max_age=0&login_hint=someone%40evil.example&redirect_uri=https%3A%2F%2Fevil.example%2F&scope=openid",
+    ];
+    for (const refusedQuery of refusedQueries) {
+      const response = await iamApp.inject({method: "GET", url: `/api/auth/login?returnTo=/tasks&${refusedQuery}`});
+      assert.equal(response.statusCode, 303, refusedQuery);
+      const authorizationUrl = new URL(response.headers.location);
+      assert.deepEqual([...authorizationUrl.searchParams.keys()].sort(), parameterNamesOfNormalSignIn, refusedQuery);
+      assert.equal(authorizationUrl.searchParams.get("redirect_uri"), `${API_BASE_URL}/api/auth/callback`, refusedQuery);
+    }
+
+    // With the allowed prompt, the rest of the query string still stays behind
+    const response = await iamApp.inject({
+      method: "GET",
+      url: "/api/auth/login?prompt=login&redirect_uri=https%3A%2F%2Fevil.example%2F&login_hint=someone%40evil.example",
+    });
+    const authorizationUrl = new URL(response.headers.location);
+    assert.deepEqual([...authorizationUrl.searchParams.keys()].sort(), [...parameterNamesOfNormalSignIn, "prompt"].sort());
+    assert.equal(authorizationUrl.searchParams.get("redirect_uri"), `${API_BASE_URL}/api/auth/callback`);
   });
 
   it("POST /api/auth/refresh exists: 401 session_ended without a refresh cookie, from the frontend origin", async () => {
@@ -750,8 +801,8 @@ describe("iam mode: GET /api/auth/callback", () => {
   const SIGN_IN_FAILED_PAGE = `${FRONTEND_ORIGIN}/auth/access?reason=sign_in_failed`;
 
   // Starts a sign-in the way a browser does: the state cookie, and the state and nonce of the authorization request
-  const startSignIn = async () => {
-    const response = await iamApp.inject({method: "GET", url: "/api/auth/login?returnTo=/tasks"});
+  const startSignIn = async (loginQuery = "returnTo=/tasks") => {
+    const response = await iamApp.inject({method: "GET", url: `/api/auth/login?${loginQuery}`});
     const authorizationUrl = new URL(response.headers.location);
     return {
       cookie: []
@@ -781,6 +832,16 @@ describe("iam mode: GET /api/auth/callback", () => {
     const setCookies = [].concat(response.headers["set-cookie"]).join("\n");
     assert.match(setCookies, /access_token=[^;]+; Path=\/; .*HttpOnly/);
     assert.match(setCookies, /refresh_token=[^;]+; Path=\/api\/auth; .*HttpOnly/);
+  });
+
+  it("finishes a sign-in with another account (prompt=login) through the same callback", async () => {
+    const signIn = await startSignIn("returnTo=/tasks&prompt=login");
+    fakeIam.expectedNonce = signIn.nonce;
+    const response = await callback(`code=one-time-code&state=${signIn.state}`, signIn.cookie);
+
+    assert.equal(response.statusCode, 303);
+    assert.equal(response.headers.location, `${FRONTEND_ORIGIN}/tasks`);
+    assert.match([].concat(response.headers["set-cookie"]).join("\n"), /access_token=[^;]+; Path=\/; .*HttpOnly/);
   });
 
   it("sends a sign-in the IAM refused (no role in this application) to the frontend with reason=access_denied", async () => {
