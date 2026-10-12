@@ -6,7 +6,7 @@
 npm install
 ```
 
-The project is managed with pnpm (`pnpm-lock.yaml`); on the server use `pnpm install --frozen-lockfile`. The VTK IAM SDK `@vtk-iam/node` is not on a registry: it is installed from `vendor/vtk-iam-node-0.1.0.tgz` in this repository.
+The project is managed with pnpm (`pnpm-lock.yaml`); on the server use `pnpm install --frozen-lockfile`. The VTK IAM SDK `@vtk-iam/node` is not on a registry: it is installed from `vendor/vtk-iam-node-0.2.0.tgz` in this repository.
 
 ## Run project
 
