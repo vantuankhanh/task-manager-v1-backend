@@ -54,7 +54,7 @@ The request log (the PM2 output) records requests under `/api/auth/` without the
 ## Before you start
 
 - Node.js 22.12 or later on the server (the SDK `@vtk-iam/node` is loaded with `require()`; the server runs 24.14.0).
-- The SDK is installed from `vendor/vtk-iam-node-0.1.0.tgz` in this repository, so `pnpm install` needs no access to the IAM repository.
+- The SDK is installed from `vendor/vtk-iam-node-0.2.0.tgz` in this repository, so `pnpm install` needs no access to the IAM repository.
 - A backup of the app database.
 - VTK IAM is running and you can sign in to its console as a super admin.
 - A VTK IAM build that contains the commit `fix(hostedui): allow a separate frontend origin in form-action` (main at or after that commit). The sign-in page of the IAM carries a `Content-Security-Policy` with `form-action`, and Chrome and Edge apply it to every redirect that follows the password form: IAM, then the API host (`/api/auth/callback`), then the frontend host. From that commit on the IAM lists the origin of the redirect URI and the origins of the post-logout redirect URIs, so registering the post-logout redirect URI of step 1 is what lets the sign-in reach the frontend. On an older build the browser stays on the IAM sign-in page after a correct password (a browser already signed in at the IAM is not affected, which hides it). The first browser test of step 9, in a private window, shows which build is running.
@@ -218,8 +218,37 @@ Leave `AUTH_MODE` out for now. If nginx in front of the API adds `Access-Control
 - Sign in as a person without any role in `taskmanager-v1`. The IAM shows its own "Access denied" page ("Your account does not have access to ... yet") with two buttons. "Sign in with another account" signs out of the IAM and shows the sign-in form again. "Return to ..." passes through the API host and ends on the frontend at `/auth/access?reason=access_denied`, never on JSON. That page has two buttons too. "Try again" goes back to the IAM, which shows "Access denied" again until the person has a role (no loop: each step needs a click). "Sign in with another account" goes straight to the IAM sign-in form (`prompt=login`), without the IAM page "Sign out" in between; the account that signs in there replaces the refused one at the IAM. Nothing is written to `"user"` for that person. Give them a role and let them sign in again.
 - Open `https://api-taskmanager-v1.vantuankhanh.com/api/auth/callback?code=x&state=y` in the browser (a callback nobody started). It ends on the frontend at `/auth/access?reason=sign_in_failed`.
 - In `pm2 logs`, the lines of the sign-in show `/api/auth/callback` without `code=` or `state=`.
-- Lock a signed-in person in the IAM console (or "sign out everywhere"). Their open tab keeps working until the access token expires, then the next click ends on the IAM sign-in page, once, without a loop; a locked account is told "This account is disabled" there.
+- Lock a signed-in person in the IAM console (or "sign out everywhere"). Without back-channel logout (next section) their open tab keeps working until the access token expires; with it, the next click already ends on the IAM sign-in page. Either way that happens once, without a loop; a locked account is told "This account is disabled" there.
 - Watch `pm2 logs` and the IAM audit log for failed sign-ins during the first days.
+
+## Back-channel logout
+
+An access token is a JWT: it verifies until it expires, up to ten minutes after the account was locked or signed out at the IAM. With back-channel logout the IAM tells this backend the moment a sign-in session ends early, and the backend refuses the access tokens of that session at once. It needs `@vtk-iam/node` 0.2.0 (in `vendor/`), VTK IAM with migration `00011`, and three steps, in this order:
+
+1. Create the table. The script is additive, safe to run twice, and the version running now does not look at the table:
+
+   ```bash
+   psql "<connection>" -v ON_ERROR_STOP=1 -f Script-Migration-IAM-Ended-Session.sql
+   ```
+
+2. Deploy this version (`pnpm install --frozen-lockfile`, restart PM2). The route `POST /api/auth/backchannel-logout` exists from now on; nothing calls it yet.
+3. In the IAM console, application `taskmanager-v1`, tab URI, set "Back-channel logout URI" to `https://api-taskmanager-v1.vantuankhanh.com/api/auth/backchannel-logout` and save.
+
+How it works: the route checks the logout token of the IAM (signature against the IAM's published keys, the `logout+jwt` type, this application as audience, the logout event, no nonce) and writes the session id to `iam_ended_session`, for an hour. Every request with an access token looks its session up there by primary key. The table is in the database because PM2 runs several processes: the IAM's call reaches one of them and all of them have to refuse the token. Old rows are deleted when a new one is written, so the table stays a few rows long.
+
+Verify:
+
+- Sign in as a test person, then lock that account in the IAM console. The very next click in the open tab ends on the IAM sign-in page, which says "This account is disabled". Before this version the tab kept working for up to ten minutes.
+- In the IAM console, Audit log: an event "Báo đăng xuất cho ứng dụng" (`oidc.backchannel_logout.sent`) for `taskmanager-v1`. "thất bại" (`.failed`) instead means the IAM could not reach the URI or got an answer other than 2xx; its metadata holds the reason.
+- `SELECT session_id, iam_sub, ended_at FROM iam_ended_session;` shows the session.
+- `curl -i -X POST https://api-taskmanager-v1.vantuankhanh.com/api/auth/backchannel-logout` answers 400 `invalid_request`: the route is there and refuses a call without a token.
+
+What to know:
+
+- If step 1 was skipped, the lookup fails on every request. The backend then treats tokens as before (valid until they expire) and logs the error; the route answers 500 to the IAM, which records "failed". Nothing else breaks.
+- The IAM tries three times within about 15 seconds. If the backend is down for longer, that logout is not delivered, and the old behaviour applies: the token lives until it expires and the next refresh answers 401.
+- A session that simply expires at the IAM is not reported.
+- To turn it off: clear the URI in the IAM console. The table can stay.
 
 ## Rollback
 
