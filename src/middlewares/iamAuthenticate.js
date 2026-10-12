@@ -1,6 +1,7 @@
 const logger = require("../loggers/loggers.config");
 const {ROLE_ADMIN} = require("./authorize");
 const {FindOrCreateLocalUser, IamLocalUserError} = require("../utils/iamLocalUser");
+const iamEndedSessions = require("../utils/iamEndedSessions");
 
 // Role key of the IAM application "taskmanager-v1" that means admin; any other role is a normal user
 const IAM_ADMIN_ROLE = "admin";
@@ -140,12 +141,17 @@ const RegisterIam = (app, iamConfig, overrides = {}) => {
     // After sign-out the browser lands on the public sign-in page of the frontend, not on a private route.
     // This exact URL has to be registered at the IAM as a post-logout redirect URI of the application
     postLogoutRedirectUri: `${iamConfig.frontendBaseUrl.replace(/\/+$/, "")}${FRONTEND_SIGN_IN_PATH}`,
+    // Back-channel logout: the IAM posts to /api/auth/backchannel-logout when a sign-in session ends
+    // early (sign-out elsewhere, a locked account, a changed password), and the session is written to
+    // the table iam_ended_session. The verifier below reads the same table
+    endedSessions: iamEndedSessions,
   };
 
   // Answers the frontend origin only (with credentials) and refuses writes from any other origin
   app.addHook("onRequest", corsHook(iamOptions));
 
-  // GET /api/auth/login, GET /api/auth/callback, POST /api/auth/refresh, POST /api/auth/logout.
+  // GET /api/auth/login, GET /api/auth/callback, POST /api/auth/refresh, POST /api/auth/logout and,
+  // called by the IAM and not by a browser, POST /api/auth/backchannel-logout.
   // The SDK routes sit in a scope of their own, so the hooks around the login and the callback touch nothing else
   app.register(
     async (authScope) => {
@@ -160,6 +166,8 @@ const RegisterIam = (app, iamConfig, overrides = {}) => {
     issuer: iamConfig.issuer,
     audience: iamConfig.apiAudience,
     keySet: overrides.keySet,
+    // Refuses the access tokens of a session the IAM reported as ended, at once instead of at their expiry
+    endedSessions: iamEndedSessions,
   });
   return CreateIamAuthenticate({verifier, issuer: iamConfig.issuer, fetchUserinfo: overrides.fetchUserinfo});
 };

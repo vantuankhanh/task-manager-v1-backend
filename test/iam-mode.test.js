@@ -39,8 +39,14 @@ const fakeDatabase = {
   queries: [],
   users: [],
   taskOwnerById: {},
+  // The table iam_ended_session: {session_id, iam_sub, ended_at, remember_until}
+  endedSessions: [],
+  // Set by a test to make every statement on iam_ended_session fail, as when the table is missing
+  endedSessionWriteError: null,
   reset() {
     this.queries = [];
+    this.endedSessions = [];
+    this.endedSessionWriteError = null;
     this.users = [
       {id: ADMIN_ID, name: "admin", email: "admin@gmail.com", password: "hash", role: 1, iam_sub: ADMIN_SUBJECT},
       {
@@ -58,6 +64,32 @@ const fakeDatabase = {
   },
   publicColumns: ({id, name, email, role, iam_sub}) => ({id, name, email, role, iam_sub}),
   answer(sql, params) {
+    if (/INSERT INTO iam_ended_session \(session_id, iam_sub, ended_at, remember_until\)/.test(sql)) {
+      if (this.endedSessionWriteError) {
+        throw this.endedSessionWriteError;
+      }
+      assert.match(sql, /ON CONFLICT \(session_id\) DO UPDATE SET remember_until = GREATEST/);
+      const [sessionId, subject, endedAt, rememberUntil] = params;
+      const knownSession = this.endedSessions.find((endedSession) => endedSession.session_id === sessionId);
+      if (knownSession) {
+        knownSession.remember_until = new Date(Math.max(knownSession.remember_until, rememberUntil));
+      } else {
+        this.endedSessions.push({session_id: sessionId, iam_sub: subject, ended_at: endedAt, remember_until: rememberUntil});
+      }
+      return [];
+    }
+    if (/DELETE FROM iam_ended_session WHERE remember_until < NOW\(\)/.test(sql)) {
+      this.endedSessions = this.endedSessions.filter((endedSession) => endedSession.remember_until >= new Date());
+      return [];
+    }
+    if (/SELECT 1 FROM iam_ended_session WHERE session_id = \$1 AND remember_until > NOW\(\) LIMIT 1/.test(sql)) {
+      if (this.endedSessionWriteError) {
+        throw this.endedSessionWriteError;
+      }
+      return this.endedSessions
+        .filter((endedSession) => endedSession.session_id === params[0] && endedSession.remember_until > new Date())
+        .map(() => ({}));
+    }
     if (/FROM "user" WHERE iam_sub = \$1 LIMIT 1/.test(sql)) {
       return this.users.filter((user) => user.iam_sub === params[0]).map(this.publicColumns);
     }
@@ -161,6 +193,13 @@ const fakeIam = {
     if (requestPath === "/oauth2/revoke") {
       return {status: 200, body: {}};
     }
+    if (requestPath === "/oauth2/jwks") {
+      // The SDK checks logout tokens against the published keys of the IAM
+      return {
+        status: 200,
+        body: {keys: [{...signingKeys.publicKey.export({format: "jwk"}), kid: "k1", alg: "RS256", use: "sig"}]},
+      };
+    }
     if (requestPath === "/oauth2/token") {
       if (this.tokenStatus !== 200) {
         return {status: this.tokenStatus, body: {error: "invalid_grant", error_description: "the code is not valid"}};
@@ -215,6 +254,30 @@ const signAccessToken = (subject, roles, overrides = {}) =>
       expiresIn: overrides.expiresIn || "10m",
     },
   );
+// A logout token as VTK IAM posts it to the back-channel logout URI of the application
+const BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout";
+const signLogoutToken = (subject, sessionId, overrides = {}) =>
+  jwt.sign(
+    {sid: sessionId, events: {[BACKCHANNEL_LOGOUT_EVENT]: {}}, ...overrides.claims},
+    overrides.privateKey || signingKeys.privateKey,
+    {
+      algorithm: "RS256",
+      keyid: "k1",
+      header: {typ: overrides.type || "logout+jwt"},
+      issuer: fakeIam.issuer,
+      audience: overrides.audience || "taskmanager-v1",
+      subject,
+      jwtid: crypto.randomUUID(),
+      expiresIn: "2m",
+    },
+  );
+const postLogoutToken = (logoutToken) =>
+  iamApp.inject({
+    method: "POST",
+    url: "/api/auth/backchannel-logout",
+    headers: {"content-type": "application/x-www-form-urlencoded"},
+    payload: new URLSearchParams({logout_token: logoutToken}).toString(),
+  });
 const bearer = (token) => ({authorization: `Bearer ${token}`});
 const adminHeaders = () => bearer(signAccessToken(ADMIN_SUBJECT, ["admin"]));
 const memberHeaders = () => bearer(signAccessToken(MEMBER_SUBJECT, ["member"]));
@@ -733,6 +796,103 @@ describe("iam mode: sign-in routes of the SDK", () => {
         assert.equal(response.headers["access-control-allow-origin"], undefined);
       }
     }
+  });
+});
+
+describe("iam mode: back-channel logout", () => {
+  const SESSION_ID = "0190f000-0000-7000-8000-0000000000e1";
+  const OTHER_SESSION_ID = "0190f000-0000-7000-8000-0000000000e2";
+  const tokenOfSession = (sessionId) => signAccessToken(MEMBER_SUBJECT, ["member"], {claims: {sid: sessionId}});
+
+  it("refuses the access tokens of a session at once when the IAM reports its end, and no other session", async () => {
+    const lockedOutToken = tokenOfSession(SESSION_ID);
+    const otherDeviceToken = tokenOfSession(OTHER_SESSION_ID);
+    assert.equal((await iamApp.inject({url: "/api/me", headers: bearer(lockedOutToken)})).statusCode, 200);
+
+    const logoutResponse = await postLogoutToken(signLogoutToken(MEMBER_SUBJECT, SESSION_ID));
+    assert.equal(logoutResponse.statusCode, 204);
+    assert.equal(logoutResponse.headers["cache-control"], "no-store");
+    assert.equal(logoutResponse.headers["set-cookie"], undefined);
+    assert.equal(fakeDatabase.endedSessions.length, 1);
+    assert.equal(fakeDatabase.endedSessions[0].session_id, SESSION_ID);
+    assert.equal(fakeDatabase.endedSessions[0].iam_sub, MEMBER_SUBJECT);
+
+    // Still a valid JWT for nine more minutes, and refused: from the header and from the cookie
+    const refused = await iamApp.inject({url: "/api/me", headers: bearer(lockedOutToken)});
+    assert.equal(refused.statusCode, 401);
+    assert.equal((await iamApp.inject({url: "/api/me", headers: {cookie: `access_token=${lockedOutToken}`}})).statusCode, 401);
+    assert.equal((await iamApp.inject({url: "/api/me", headers: bearer(otherDeviceToken)})).statusCode, 200);
+    // The session is looked up by its primary key, with the value as a parameter
+    assert.ok(queriesMatching(/SELECT 1 FROM iam_ended_session WHERE session_id = \$1/).every(({params}) => params.length === 1));
+  });
+
+  it("needs no cookie, no token and no Origin: the IAM calls it from server to server", async () => {
+    const logoutResponse = await postLogoutToken(signLogoutToken(MEMBER_SUBJECT, SESSION_ID));
+    assert.equal(logoutResponse.statusCode, 204);
+    assert.equal(logoutResponse.headers["access-control-allow-origin"], undefined);
+  });
+
+  it("answers 400 to anything but one valid logout token of this application, and records nothing", async () => {
+    const refusedTokens = [
+      "not-a-jwt",
+      // An access token or an ID token replayed as a logout: the type is not logout+jwt
+      tokenOfSession(SESSION_ID),
+      signLogoutToken(MEMBER_SUBJECT, SESSION_ID, {type: "JWT"}),
+      signLogoutToken(MEMBER_SUBJECT, SESSION_ID, {audience: "another-application"}),
+      signLogoutToken(MEMBER_SUBJECT, SESSION_ID, {privateKey: otherSigningKeys.privateKey}),
+      signLogoutToken(MEMBER_SUBJECT, SESSION_ID, {claims: {nonce: "n-1"}}),
+      signLogoutToken(MEMBER_SUBJECT, SESSION_ID, {claims: {events: {}}}),
+    ];
+    for (const refusedToken of refusedTokens) {
+      const response = await postLogoutToken(refusedToken);
+      assert.equal(response.statusCode, 400, `token ${refusedTokens.indexOf(refusedToken)} must be refused`);
+      assert.equal(response.json().error, "invalid_request");
+    }
+    const emptyBody = await iamApp.inject({
+      method: "POST",
+      url: "/api/auth/backchannel-logout",
+      headers: {"content-type": "application/x-www-form-urlencoded"},
+      payload: "",
+    });
+    assert.equal(emptyBody.statusCode, 400);
+    assert.equal(fakeDatabase.endedSessions.length, 0);
+    assert.equal((await iamApp.inject({url: "/api/me", headers: bearer(tokenOfSession(SESSION_ID))})).statusCode, 200);
+  });
+
+  it("answers 500 when the table cannot be written, so that the IAM tries again", async () => {
+    fakeDatabase.endedSessionWriteError = new Error('relation "iam_ended_session" does not exist');
+    const response = await postLogoutToken(signLogoutToken(MEMBER_SUBJECT, SESSION_ID));
+    assert.equal(response.statusCode, 500);
+    assert.ok(!response.body.includes("iam_ended_session"), "the answer must not describe the database");
+  });
+
+  it("keeps the API working when the table is missing: tokens are valid until they expire, as before", async () => {
+    fakeDatabase.endedSessionWriteError = new Error('relation "iam_ended_session" does not exist');
+    const response = await iamApp.inject({url: "/api/me", headers: bearer(tokenOfSession(SESSION_ID))});
+    assert.equal(response.statusCode, 200);
+  });
+
+  it("forgets a session once its tokens have expired by themselves", async () => {
+    await postLogoutToken(signLogoutToken(MEMBER_SUBJECT, SESSION_ID));
+    assert.ok(fakeDatabase.endedSessions[0].remember_until - Date.now() > 55 * 60 * 1000, "remembered for about an hour");
+    // An hour later: the row is past its time, and the next report removes it
+    fakeDatabase.endedSessions[0].remember_until = new Date(Date.now() - 1000);
+    assert.equal((await iamApp.inject({url: "/api/me", headers: bearer(tokenOfSession(SESSION_ID))})).statusCode, 200);
+    await postLogoutToken(signLogoutToken(MEMBER_SUBJECT, OTHER_SESSION_ID));
+    assert.deepEqual(
+      fakeDatabase.endedSessions.map((endedSession) => endedSession.session_id),
+      [OTHER_SESSION_ID],
+    );
+  });
+
+  it("does not exist in legacy mode", async () => {
+    const response = await legacyApp.inject({
+      method: "POST",
+      url: "/api/auth/backchannel-logout",
+      headers: {"content-type": "application/x-www-form-urlencoded"},
+      payload: new URLSearchParams({logout_token: signLogoutToken(MEMBER_SUBJECT, SESSION_ID)}).toString(),
+    });
+    assert.equal(response.statusCode, 404);
   });
 });
 
