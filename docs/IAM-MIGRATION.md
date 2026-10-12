@@ -54,7 +54,7 @@ The request log (the PM2 output) records requests under `/api/auth/` without the
 ## Before you start
 
 - Node.js 22.12 or later on the server (the SDK `@vtk-iam/node` is loaded with `require()`; the server runs 24.14.0).
-- The SDK is installed from `vendor/vtk-iam-node-0.2.0.tgz` in this repository, so `pnpm install` needs no access to the IAM repository.
+- The SDK is installed from `vendor/vtk-iam-node-0.3.0.tgz` in this repository, so `pnpm install` needs no access to the IAM repository.
 - A backup of the app database.
 - VTK IAM is running and you can sign in to its console as a super admin.
 - A VTK IAM build that contains the commit `fix(hostedui): allow a separate frontend origin in form-action` (main at or after that commit). The sign-in page of the IAM carries a `Content-Security-Policy` with `form-action`, and Chrome and Edge apply it to every redirect that follows the password form: IAM, then the API host (`/api/auth/callback`), then the frontend host. From that commit on the IAM lists the origin of the redirect URI and the origins of the post-logout redirect URIs, so registering the post-logout redirect URI of step 1 is what lets the sign-in reach the frontend. On an older build the browser stays on the IAM sign-in page after a correct password (a browser already signed in at the IAM is not affected, which hides it). The first browser test of step 9, in a private window, shows which build is running.
@@ -223,7 +223,7 @@ Leave `AUTH_MODE` out for now. If nginx in front of the API adds `Access-Control
 
 ## Back-channel logout
 
-An access token is a JWT: it verifies until it expires, up to ten minutes after the account was locked or signed out at the IAM. With back-channel logout the IAM tells this backend the moment a sign-in session ends early, and the backend refuses the access tokens of that session at once. It needs `@vtk-iam/node` 0.2.0 (in `vendor/`), VTK IAM with migration `00011`, and three steps, in this order:
+An access token is a JWT: it verifies until it expires, up to ten minutes after the account was locked or signed out at the IAM. With back-channel logout the IAM tells this backend the moment a sign-in session ends early, and the backend refuses the access tokens of that session at once. It needs `@vtk-iam/node` 0.2.0 or later (in `vendor/`), VTK IAM with migration `00011`, and three steps, in this order:
 
 1. Create the table. The script is additive, safe to run twice, and the version running now does not look at the table:
 
