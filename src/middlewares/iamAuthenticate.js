@@ -12,50 +12,8 @@ const AUTH_PREFIX = "/api/auth";
 // Frontend pages (both public): where a signed-out browser lands, and where a failed sign-in lands
 const FRONTEND_SIGN_IN_PATH = "/auth/login";
 const FRONTEND_SIGN_IN_FAILED_PATH = "/auth/access";
-// The only values the reason parameter of the failed sign-in page ever takes
-const REASON_ACCESS_DENIED = "access_denied";
-const REASON_SIGN_IN_FAILED = "sign_in_failed";
 // The only prompt GET /api/auth/login passes on to the IAM (OpenID Connect prompt=login)
 const PROMPT_LOGIN = "login";
-
-// onSend hook for the sign-in routes. GET /login?prompt=login is "sign in with another account": the SDK
-// builds the authorization request without a prompt, so the IAM would sign the browser in again as the
-// account it still knows. With prompt=login added to that request the IAM shows its sign-in form instead,
-// and the account that signs in there replaces the session of the previous one.
-// The value is fixed: any other prompt, a repeated one or none leaves the redirect of the SDK as it is,
-// and nothing else of the query string reaches the IAM
-const CreateSignInWithAnotherAccountPrompt = () => {
-  return async (req, res, payload) => {
-    const isLogin = req.method === "GET" && req.routeOptions.url === `${AUTH_PREFIX}/login`;
-    if (!isLogin || res.statusCode !== 303 || req.query.prompt !== PROMPT_LOGIN) {
-      return payload;
-    }
-    const authorizationUrl = new URL(res.getHeader("location"));
-    authorizationUrl.searchParams.set("prompt", PROMPT_LOGIN);
-    res.header("location", authorizationUrl.href);
-    return payload;
-  };
-};
-
-// onSend hook for the sign-in routes. A browser is on GET /callback, so a failed sign-in must not end on
-// bare JSON on the API host: the answer of the SDK (403 when the IAM refused the user, as for a person
-// without a role in this invite-only application; 400 for anything else, as a missing or expired sign-in
-// cookie, a state mismatch or a failed token exchange) becomes a 303 to the frontend.
-// The reason is one of two fixed codes picked from the status: nothing of the query string is copied over.
-// Every other route and every other answer is left as it is
-const CreateFailedCallbackRedirect = (frontendBaseUrl) => {
-  const failedPageUrl = `${frontendBaseUrl.replace(/\/+$/, "")}${FRONTEND_SIGN_IN_FAILED_PATH}`;
-
-  return async (req, res, payload) => {
-    const isCallback = req.method === "GET" && req.routeOptions.url === `${AUTH_PREFIX}/callback`;
-    if (!isCallback || (res.statusCode !== 400 && res.statusCode !== 403)) {
-      return payload;
-    }
-    const reason = res.statusCode === 403 ? REASON_ACCESS_DENIED : REASON_SIGN_IN_FAILED;
-    res.code(303).header("location", `${failedPageUrl}?reason=${reason}`).removeHeader("content-type");
-    return null;
-  };
-};
 
 // Name and email of the signed-in account, from the IAM userinfo endpoint (scopes profile and email).
 // Only needed the first time an account is seen; afterwards the local row answers
@@ -141,6 +99,15 @@ const RegisterIam = (app, iamConfig, overrides = {}) => {
     // After sign-out the browser lands on the public sign-in page of the frontend, not on a private route.
     // This exact URL has to be registered at the IAM as a post-logout redirect URI of the application
     postLogoutRedirectUri: `${iamConfig.frontendBaseUrl.replace(/\/+$/, "")}${FRONTEND_SIGN_IN_PATH}`,
+    // GET /api/auth/login?prompt=login is "sign in with another account": the IAM shows its sign-in form
+    // even to a browser it still knows, and the account that signs in there replaces the previous one.
+    // The SDK passes this one value on and nothing else of the query string
+    allowedPrompts: [PROMPT_LOGIN],
+    // A browser is on GET /api/auth/callback, so a failed sign-in must not end on bare JSON on the API
+    // host: the SDK answers 303 to this page of the frontend with ?reason=access_denied (the IAM refused
+    // the user, as for a person without a role in this invite-only application) or ?reason=sign_in_failed
+    // (a missing or expired sign-in cookie, a state mismatch, a failed token exchange)
+    signInFailedPath: FRONTEND_SIGN_IN_FAILED_PATH,
     // Back-channel logout: the IAM posts to /api/auth/backchannel-logout when a sign-in session ends
     // early (sign-out elsewhere, a locked account, a changed password), and the session is written to
     // the table iam_ended_session. The verifier below reads the same table
@@ -151,16 +118,8 @@ const RegisterIam = (app, iamConfig, overrides = {}) => {
   app.addHook("onRequest", corsHook(iamOptions));
 
   // GET /api/auth/login, GET /api/auth/callback, POST /api/auth/refresh, POST /api/auth/logout and,
-  // called by the IAM and not by a browser, POST /api/auth/backchannel-logout.
-  // The SDK routes sit in a scope of their own, so the hooks around the login and the callback touch nothing else
-  app.register(
-    async (authScope) => {
-      authScope.addHook("onSend", CreateSignInWithAnotherAccountPrompt());
-      authScope.addHook("onSend", CreateFailedCallbackRedirect(iamConfig.frontendBaseUrl));
-      authScope.register(authRoutesPlugin, iamOptions);
-    },
-    {prefix: AUTH_PREFIX},
-  );
+  // called by the IAM and not by a browser, POST /api/auth/backchannel-logout
+  app.register(authRoutesPlugin, {...iamOptions, prefix: AUTH_PREFIX});
 
   const verifier = createAccessTokenVerifier({
     issuer: iamConfig.issuer,
@@ -175,7 +134,5 @@ const RegisterIam = (app, iamConfig, overrides = {}) => {
 module.exports = {
   IAM_ADMIN_ROLE,
   CreateIamAuthenticate,
-  CreateFailedCallbackRedirect,
-  CreateSignInWithAnotherAccountPrompt,
   RegisterIam,
 };
