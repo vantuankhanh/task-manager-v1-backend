@@ -11,9 +11,6 @@ importers:
       '@fastify/cookie':
         specifier: ^9.3.1
         version: 9.4.0
-      '@fastify/cors':
-        specifier: ^9.0.1
-        version: 9.0.1
       '@fastify/env':
         specifier: ^4.3.0
         version: 4.4.0
@@ -35,9 +32,6 @@ importers:
       axios:
         specifier: ^1.6.8
         version: 1.13.6
-      bcryptjs:
-        specifier: ^3.0.3
-        version: 3.0.3
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
@@ -53,9 +47,6 @@ importers:
       http:
         specifier: ^0.0.1-security
         version: 0.0.1-security
-      jsonwebtoken:
-        specifier: ^9.0.2
-        version: 9.0.3
       mock-aws-s3:
         specifier: ^4.0.2
         version: 4.0.2
@@ -89,6 +80,10 @@ importers:
       winston:
         specifier: ^3.13.0
         version: 3.19.0
+    devDependencies:
+      jsonwebtoken:
+        specifier: ^9.0.2
+        version: 9.0.3
 
 packages:
 
@@ -108,9 +103,6 @@ packages:
 
   '@fastify/cookie@9.4.0':
     resolution: {integrity: sha512-Th+pt3kEkh4MQD/Q2q1bMuJIB5NX/D5SwSpOKu3G/tjoGbwfpurIMJsWSPS0SJJ4eyjtmQ8OipDQspf8RbUOlg==}
-
-  '@fastify/cors@9.0.1':
-    resolution: {integrity: sha512-YY9Ho3ovI+QHIL2hW+9X4XqQjXLjJqsU+sMV/xFsxZkE8p3GNnYVFpoOxF7SsP5ZL76gwvbo3V9L+FIekBGU4Q==}
 
   '@fastify/env@4.4.0':
     resolution: {integrity: sha512-JEg6wo05KOhmRJ1lBTjJ8zQVUJmxInaavsMkfO1cfYWXOfdQXO48k01LneOmM5Y8dwwQ6ff7WUEi/dHl8YidIQ==}
@@ -308,10 +300,6 @@ packages:
   basic-ftp@5.2.0:
     resolution: {integrity: sha512-VoMINM2rqJwJgfdHq6RiUudKt2BV+FY5ZFezP/ypmwayk68+NzzAQy4XXLlqsGD4MCzq3DrmNFD/uUmBJuGoXw==}
     engines: {node: '>=10.0.0'}
-
-  bcryptjs@3.0.3:
-    resolution: {integrity: sha512-GlF5wPWnSa/X5LKM1o0wz0suXIINz1iHRLvTS+sLyi7XPbe5ycmYI3DlZqVGZZtDgl4DmasFg7gOB3JYbphV5g==}
-    hasBin: true
 
   binary-extensions@2.3.0:
     resolution: {integrity: sha512-Ceh+7ox5qe7LJuLHoY0feh3pHuUDHAcRUeyL2VYghZwfpkNIy/+8Ocg0a3UuSoYzavmylwuLWQOf3hl0jjMMIw==}
@@ -999,9 +987,6 @@ packages:
     engines: {node: '>=10'}
     hasBin: true
 
-  mnemonist@0.39.6:
-    resolution: {integrity: sha512-A/0v5Z59y63US00cRSLiloEIw3t5G+MiKz4BhX21FI+YBJXBOGW0ohFxTxO08dsOYlzxo87T7vGfZKYp2bcAWA==}
-
   mock-aws-s3@4.0.2:
     resolution: {integrity: sha512-J6g3MMCuKHeuqVEOgvQfRGIfVmg6KKrED48Bux/L9rTY3NPK9TFRh/9bCf5AuzjJm9PIlwhDEO99tD8+smnTyQ==}
     engines: {node: '>=10.0.0'}
@@ -1050,9 +1035,6 @@ packages:
 
   oauth4webapi@3.8.8:
     resolution: {integrity: sha512-8N28E+a/oxfXWBgOMt+ZP/JUf/XR+IFbvkAEPP3gznXOMv9BpAAwiIj0TFNz3tGTPc0ZQ8zmWBNgN1nAys0gng==}
-
-  obliterator@2.0.5:
-    resolution: {integrity: sha512-42CPE9AhahZRsMNslczq0ctAEtqk8Eka26QofnqC346BZdHDySk3LWka23LI7ULIw11NmltpiLagIq8gBozxTw==}
 
   on-exit-leak-free@2.1.2:
     resolution: {integrity: sha512-0eJJY6hXLGf1udHwfNftBqH+g73EU4B504nZeKpz1sYRKafAghwxEJunB2O7rDZkL4PGfsMVnTXZ2EjibbqcsA==}
@@ -1623,11 +1605,6 @@ snapshots:
       cookie-signature: 1.2.2
       fastify-plugin: 4.5.1
 
-  '@fastify/cors@9.0.1':
-    dependencies:
-      fastify-plugin: 4.5.1
-      mnemonist: 0.39.6
-
   '@fastify/env@4.4.0':
     dependencies:
       env-schema: 6.1.0
@@ -1870,8 +1847,6 @@ snapshots:
       safe-buffer: 5.1.2
 
   basic-ftp@5.2.0: {}
-
-  bcryptjs@3.0.3: {}
 
   binary-extensions@2.3.0: {}
 
@@ -2532,10 +2507,6 @@ snapshots:
 
   mkdirp@1.0.4: {}
 
-  mnemonist@0.39.6:
-    dependencies:
-      obliterator: 2.0.5
-
   mock-aws-s3@4.0.2:
     dependencies:
       bluebird: 3.7.2
@@ -2599,8 +2570,6 @@ snapshots:
       lazy: 1.0.11
 
   oauth4webapi@3.8.8: {}
-
-  obliterator@2.0.5: {}
 
   on-exit-leak-free@2.1.2: {}
 

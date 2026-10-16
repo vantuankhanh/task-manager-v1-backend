@@ -1,5 +1,4 @@
 const escape = require("escape-html");
-const QueryDatabase = require("../utils/queryDatabase");
 const logger = require("../loggers/loggers.config");
 
 // "user".role: 0 is a normal user, 1 is an admin
@@ -7,21 +6,11 @@ const ROLE_ADMIN = 1;
 
 const replyForbidden = (res) => res.status(403).send({code: 403, message: "Forbidden"});
 
-// AUTH_MODE=legacy: the role inside the token is the one from sign-in time and survives every refresh, so it
-// can be stale after a role change or a deleted account. The current role is read from the database instead
-// (one lookup per request, kept on req.user).
-// AUTH_MODE=iam: the IAM hook has already set req.user.isAdmin from the roles of the access token (the IAM
-// reads roles at every token issue), so nothing is read here.
-// Use after the authentication hook of the mode (VerifyToken or the IAM hook)
-const IsAdmin = async (req) => {
-  if (req.user.isAdmin === undefined) {
-    const data = await QueryDatabase(`SELECT role FROM "user" WHERE email = $1 LIMIT 1`, [req.user.email]);
-    req.user.isAdmin = data.rows.length > 0 && Number(data.rows[0].role) === ROLE_ADMIN;
-  }
-  return req.user.isAdmin;
-};
+// The IAM hook sets req.user.isAdmin from the roles of the access token (the IAM reads roles at every token
+// issue), so nothing is read here. Use after that hook
+const IsAdmin = async (req) => req.user.isAdmin === true;
 
-// Hook for admin-only routes. Use after VerifyToken
+// Hook for admin-only routes. Use after the IAM hook
 const RequireAdmin = async (req, res) => {
   try {
     if (!(await IsAdmin(req))) {
@@ -34,7 +23,7 @@ const RequireAdmin = async (req, res) => {
 };
 
 // Hook for routes where a normal user may only act on their own data: the email picked by getEmail(req)
-// must be the caller's own email, unless the caller is an admin. Use after VerifyToken; as a preHandler
+// must be the caller's own email, unless the caller is an admin. Use after the IAM hook; as a preHandler
 // when the email is in the body. Emails are stored escaped, so the input is escaped before comparing
 const RequireOwnEmailOrAdmin = (getEmail) => async (req, res) => {
   try {

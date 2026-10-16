@@ -28,9 +28,9 @@ const fetchUserinfoFromIam = async (issuer, accessToken) => {
   return response.json();
 };
 
-// AUTH_MODE=iam counterpart of VerifyToken: checks the access token of VTK IAM (httpOnly cookie or
-// Authorization: Bearer) and sets req.user = {id, name, email, role} from the local "user" row, so the
-// hooks and controllers that run next do not care which mode signed the user in.
+// Checks the access token of VTK IAM (httpOnly cookie or Authorization: Bearer) and sets
+// req.user = {id, name, email, role, isAdmin} from the local "user" row for the hooks and controllers that
+// run next.
 // The role is the one in the token (the IAM reads roles at every token issue), not the local column
 const CreateIamAuthenticate = ({verifier, issuer, fetchUserinfo = fetchUserinfoFromIam}) => {
   const {extractAccessToken} = require("@vtk-iam/node");
@@ -79,12 +79,11 @@ const CreateIamAuthenticate = ({verifier, issuer, fetchUserinfo = fetchUserinfoF
   };
 };
 
-// Wires AUTH_MODE=iam into the app: CORS for the frontend host in front of everything, the sign-in routes
+// Wires the sign-in through VTK IAM into the app: CORS for the frontend host in front of everything, the sign-in routes
 // of the SDK at /api/auth, and the hook the API routes use to authenticate. Returns that hook.
 // overrides is for tests only: keySet (a local key set instead of the JWKS of the IAM) and fetchUserinfo
 const RegisterIam = (app, iamConfig, overrides = {}) => {
-  // Loaded here and not at the top: the SDK ships ES modules, which require() loads on Node.js 22.12 or later.
-  // AUTH_MODE=legacy never gets here
+  // Loaded here and not at the top: the SDK ships ES modules, which require() loads on Node.js 22.12 or later
   const {createAccessTokenVerifier} = require("@vtk-iam/node");
   const {authRoutesPlugin, corsHook} = require("@vtk-iam/node/fastify");
 

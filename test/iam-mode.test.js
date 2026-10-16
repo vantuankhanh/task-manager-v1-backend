@@ -48,17 +48,16 @@ const fakeDatabase = {
     this.endedSessions = [];
     this.endedSessionWriteError = null;
     this.users = [
-      {id: ADMIN_ID, name: "admin", email: "admin@gmail.com", password: "hash", role: 1, iam_sub: ADMIN_SUBJECT},
+      {id: ADMIN_ID, name: "admin", email: "admin@gmail.com", role: 1, iam_sub: ADMIN_SUBJECT},
       {
         id: MEMBER_ID,
         name: "Tom &amp; Jerry",
         email: "tom&amp;jerry@gmail.com",
-        password: "hash",
         role: 0,
         iam_sub: MEMBER_SUBJECT,
       },
       // Imported into the IAM, but the mapping was never loaded: no iam_sub yet. Stored with capital letters
-      {id: IMPORTED_ID, name: "Minh", email: "Minh@Example.com", password: "hash", role: 0, iam_sub: null},
+      {id: IMPORTED_ID, name: "Minh", email: "Minh@Example.com", role: 0, iam_sub: null},
     ];
     this.taskOwnerById = {[OWN_TASK_ID]: "tom&amp;jerry@gmail.com", [OTHER_TASK_ID]: "admin@gmail.com"};
   },
@@ -98,13 +97,13 @@ const fakeDatabase = {
       matches.forEach((user) => (user.iam_sub = params[0]));
       return matches.map(this.publicColumns);
     }
-    if (/INSERT INTO "user" \(name, email, password, role, iam_sub\)/.test(sql)) {
+    if (/INSERT INTO "user" \(name, email, role, iam_sub\)/.test(sql)) {
       assert.match(sql, /ON CONFLICT DO NOTHING/);
-      const [name, email, password, role, iamSubject] = params;
+      const [name, email, role, iamSubject] = params;
       if (this.users.some((user) => user.iam_sub === iamSubject || user.email.toLowerCase() === email.toLowerCase())) {
         return [];
       }
-      const createdUser = {id: crypto.randomUUID(), name, email, password, role, iam_sub: iamSubject};
+      const createdUser = {id: crypto.randomUUID(), name, email, role, iam_sub: iamSubject};
       this.users.push(createdUser);
       return [this.publicColumns(createdUser)];
     }
@@ -304,7 +303,7 @@ const projectBody = {
   priority: 1,
 };
 
-// The admin-only routes of the route table that still exist in iam mode
+// The admin-only routes of the route table
 const adminOnlyRoutes = [
   {method: "DELETE", url: "/api/user", payload: {id: MEMBER_ID}},
   {method: "POST", url: "/api/project", payload: projectBody},
@@ -316,22 +315,21 @@ const adminOnlyRoutes = [
   {method: "GET", url: `/api/gettaskbyprojectid/${PROJECT_ID}`},
 ];
 
-// The endpoints of the old sign-in
-const legacyOnlyRoutes = [
+// The endpoints of the sign-in this app did itself, removed in milestone M9 of VTK IAM
+const removedRoutes = [
   {method: "POST", url: "/api/login", payload: {email: "admin@gmail.com", password: "x"}},
   {method: "GET", url: "/api/refresh-token"},
   {method: "POST", url: "/api/user", payload: {email: "new@gmail.com", name: "new", password: "x"}},
   {method: "PUT", url: "/api/user/changerole", payload: {email: "admin@gmail.com", role: 0}},
+  {method: "GET", url: "/api/auth/config"},
 ];
 
 let iamApp;
-let legacyApp;
 
 before(async () => {
   await fakeIam.start();
 
   const authConfig = GetAuthConfig({
-    AUTH_MODE: "iam",
     IAM_ISSUER: fakeIam.issuer,
     IAM_CLIENT_ID: "taskmanager-v1",
     IAM_CLIENT_SECRET: "test-client-secret",
@@ -341,21 +339,15 @@ before(async () => {
     COOKIE_SECRET: "test-cookie-secret-of-at-least-32-characters",
   });
 
-  // The same wiring as src/server.js in iam mode; only the key set is local
+  // The same wiring as src/server.js; only the key set is local
   iamApp = require("fastify")();
   const authenticate = RegisterIam(iamApp, authConfig.iam, {keySet: async () => signingKeys.publicKey});
-  iamApp.register(allRouter, {prefix: "/api", authMode: authConfig.mode, authenticate});
+  iamApp.register(allRouter, {prefix: "/api", authenticate});
   await iamApp.ready();
-
-  // The same wiring as src/server.js in legacy mode
-  legacyApp = require("fastify")();
-  legacyApp.register(allRouter, {prefix: "/api", authMode: GetAuthConfig({}).mode, authenticate: undefined});
-  await legacyApp.ready();
 });
 
 after(async () => {
   await iamApp.close();
-  await legacyApp.close();
   await fakeIam.stop();
 });
 
@@ -364,9 +356,8 @@ beforeEach(() => {
   fakeIam.reset();
 });
 
-describe("AUTH_MODE", () => {
+describe("the sign-in settings", () => {
   const iamEnvironment = {
-    AUTH_MODE: "iam",
     IAM_ISSUER: "https://auth.vantuankhanh.com",
     IAM_CLIENT_ID: "taskmanager-v1",
     IAM_CLIENT_SECRET: "client-secret-value",
@@ -376,17 +367,8 @@ describe("AUTH_MODE", () => {
     COOKIE_SECRET: "cookie-secret-value-of-at-least-32-characters",
   };
 
-  it("is legacy by default and needs none of the IAM variables", () => {
-    assert.deepEqual(GetAuthConfig({}), {mode: "legacy"});
-    assert.deepEqual(GetAuthConfig({AUTH_MODE: "legacy"}), {mode: "legacy"});
-  });
-
-  it("refuses an unknown mode", () => {
-    assert.throws(() => GetAuthConfig({AUTH_MODE: "oidc"}), /AUTH_MODE must be "legacy" or "iam"/);
-  });
-
-  it("refuses to start in iam mode when a variable is missing, naming the variables and no value", () => {
-    for (const missingName of Object.keys(iamEnvironment).filter((name) => name !== "AUTH_MODE")) {
+  it("refuse to start when a variable is missing, naming the variables and no value", () => {
+    for (const missingName of Object.keys(iamEnvironment)) {
       assert.throws(
         () => GetAuthConfig({...iamEnvironment, [missingName]: " "}),
         (error) => {
@@ -397,7 +379,7 @@ describe("AUTH_MODE", () => {
       );
     }
     assert.throws(
-      () => GetAuthConfig({AUTH_MODE: "iam"}),
+      () => GetAuthConfig({}),
       /IAM_ISSUER, IAM_CLIENT_ID, IAM_CLIENT_SECRET, IAM_API_AUDIENCE, APP_BASE_URL, FRONTEND_BASE_URL, COOKIE_SECRET/,
     );
   });
@@ -409,45 +391,10 @@ describe("AUTH_MODE", () => {
     );
   });
 
-  it("reads the iam settings", () => {
+  it("are read", () => {
     const authConfig = GetAuthConfig(iamEnvironment);
-    assert.equal(authConfig.mode, "iam");
     assert.equal(authConfig.iam.clientId, "taskmanager-v1");
     assert.equal(authConfig.iam.frontendBaseUrl, FRONTEND_ORIGIN);
-  });
-});
-
-describe("GET /api/auth/config", () => {
-  it("answers the mode without a token, in both modes", async () => {
-    const legacy = await legacyApp.inject({method: "GET", url: "/api/auth/config"});
-    assert.equal(legacy.statusCode, 200);
-    assert.deepEqual(legacy.json(), {mode: "legacy"});
-
-    const iam = await iamApp.inject({method: "GET", url: "/api/auth/config"});
-    assert.equal(iam.statusCode, 200);
-    assert.deepEqual(iam.json(), {mode: "iam"});
-  });
-});
-
-describe("legacy mode next to iam mode", () => {
-  it("keeps the old sign-in endpoints and has none of the iam ones", async () => {
-    const refreshToken = await legacyApp.inject({method: "GET", url: "/api/refresh-token"});
-    assert.equal(refreshToken.statusCode, 401);
-    assert.equal(refreshToken.json().message, "Can not find authorization header");
-
-    for (const url of ["/api/me", "/api/auth/login", "/api/auth/callback"]) {
-      const response = await legacyApp.inject({method: "GET", url});
-      assert.equal(response.statusCode, 404, url);
-    }
-    for (const url of ["/api/auth/refresh", "/api/auth/logout"]) {
-      const response = await legacyApp.inject({method: "POST", url});
-      assert.equal(response.statusCode, 404, url);
-    }
-  });
-
-  it("refuses an IAM access token", async () => {
-    const response = await legacyApp.inject({method: "GET", url: "/api/task", headers: adminHeaders()});
-    assert.equal(response.statusCode, 401);
   });
 });
 
@@ -524,7 +471,7 @@ describe("iam mode: local user", () => {
     assert.equal(createdUser.name, "Tom &amp; Jerry&#39;s &lt;friend&gt;");
     assert.equal(createdUser.email, "new.user@example.com");
     assert.equal(createdUser.role, 1);
-    assert.equal(createdUser.password, "!", "not a bcrypt hash: the legacy login can never match it");
+    assert.equal("password" in createdUser, false, "no local password");
     assert.deepEqual(response.json(), {
       id: createdUser.id,
       name: `Tom & Jerry's <friend>`,
@@ -637,7 +584,7 @@ describe("iam mode: the route rules", () => {
     assert.deepEqual(
       queriesMatching(/SELECT role FROM "user" WHERE email = \$1 LIMIT 1/),
       [],
-      "the legacy role lookup never runs",
+      "no role is read from the database",
     );
   });
 
@@ -693,13 +640,11 @@ describe("iam mode: the route rules", () => {
   });
 });
 
-describe("iam mode: endpoints of the old sign-in", () => {
-  for (const route of legacyOnlyRoutes) {
-    it(`${route.method} ${route.url} is gone (410 with a message)`, async () => {
+describe("endpoints of the old sign-in", () => {
+  for (const route of removedRoutes) {
+    it(`${route.method} ${route.url} no longer exists`, async () => {
       const response = await iamApp.inject({...route, headers: adminHeaders()});
-      assert.equal(response.statusCode, 410);
-      assert.equal(response.json().code, 410);
-      assert.ok(response.json().message.length > 0);
+      assert.equal(response.statusCode, 404);
       assert.equal(fakeDatabase.queries.length, 0);
     });
   }
@@ -884,21 +829,11 @@ describe("iam mode: back-channel logout", () => {
       [OTHER_SESSION_ID],
     );
   });
-
-  it("does not exist in legacy mode", async () => {
-    const response = await legacyApp.inject({
-      method: "POST",
-      url: "/api/auth/backchannel-logout",
-      headers: {"content-type": "application/x-www-form-urlencoded"},
-      payload: new URLSearchParams({logout_token: signLogoutToken(MEMBER_SUBJECT, SESSION_ID)}).toString(),
-    });
-    assert.equal(response.statusCode, 404);
-  });
 });
 
 describe("iam mode: CORS", () => {
   it("answers the frontend origin with credentials, never with a wildcard", async () => {
-    const response = await iamApp.inject({method: "GET", url: "/api/auth/config", headers: {origin: FRONTEND_ORIGIN}});
+    const response = await iamApp.inject({method: "GET", url: "/api/me", headers: {origin: FRONTEND_ORIGIN, ...adminHeaders()}});
     assert.equal(response.statusCode, 200);
     assert.equal(response.headers["access-control-allow-origin"], FRONTEND_ORIGIN);
     assert.equal(response.headers["access-control-allow-credentials"], "true");
@@ -906,7 +841,7 @@ describe("iam mode: CORS", () => {
   });
 
   it("gives another origin no CORS header", async () => {
-    const response = await iamApp.inject({method: "GET", url: "/api/auth/config", headers: {origin: FOREIGN_ORIGIN}});
+    const response = await iamApp.inject({method: "GET", url: "/api/me", headers: {origin: FOREIGN_ORIGIN, ...adminHeaders()}});
     assert.equal(response.headers["access-control-allow-origin"], undefined);
     assert.equal(response.headers["access-control-allow-credentials"], undefined);
   });

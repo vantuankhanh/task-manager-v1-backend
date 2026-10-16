@@ -4,9 +4,6 @@ const QueryDatabase = require("./queryDatabase");
 const USER_COLUMNS = `id, name, email, role, iam_sub`;
 // "user".email and "user".name are character varying(50)
 const MAX_COLUMN_LENGTH = 50;
-// A user created from the IAM has no local password. This value is not a bcrypt hash, so the legacy
-// login answers it with the generic 401 (bcrypt compare is false) after a rollback to AUTH_MODE=legacy
-const UNUSABLE_PASSWORD = "!";
 
 // A sign-in that is valid at the IAM but cannot be mapped to a local user
 class IamLocalUserError extends Error {
@@ -66,8 +63,8 @@ const FindOrCreateLocalUser = async ({subject, role, loadProfile}) => {
 
     if (!localUser) {
       const created = await QueryDatabase(
-        `INSERT INTO "user" (name, email, password, role, iam_sub) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING ${USER_COLUMNS}`,
-        [storedName(profile), email, UNUSABLE_PASSWORD, role, subject],
+        `INSERT INTO "user" (name, email, role, iam_sub) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING ${USER_COLUMNS}`,
+        [storedName(profile), email, role, subject],
       );
       // Nothing inserted: another request created or linked the row first, or the email belongs to another account
       localUser = created.rows[0] || (await findBySubject(subject));
@@ -78,7 +75,7 @@ const FindOrCreateLocalUser = async ({subject, role, loadProfile}) => {
     }
   }
 
-  // The role comes from the IAM. The local column is kept in step so a rollback to AUTH_MODE=legacy has sensible data
+  // The role comes from the IAM. The local column is kept in step for the user list, which shows it
   if (Number(localUser.role) !== role) {
     await QueryDatabase(`UPDATE "user" SET role = $1 WHERE iam_sub = $2`, [role, subject]);
     localUser.role = role;
@@ -87,4 +84,4 @@ const FindOrCreateLocalUser = async ({subject, role, loadProfile}) => {
   return localUser;
 };
 
-module.exports = {FindOrCreateLocalUser, IamLocalUserError, UNUSABLE_PASSWORD};
+module.exports = {FindOrCreateLocalUser, IamLocalUserError};

@@ -1,7 +1,6 @@
 "use strict";
 require("dotenv").config();
 const http = require("http");
-const cors = require("@fastify/cors");
 const rateLimit = require("@fastify/rate-limit");
 const pino = require("pino");
 const pretty = require("pino-pretty");
@@ -9,11 +8,11 @@ const path = require("path");
 const fastifySwagger = require("@fastify/swagger");
 const fastifySwaggerUi = require("@fastify/swagger-ui");
 const allRouter = require("./routes/routes");
-const {AUTH_MODE_IAM, GetAuthConfig} = require("./utils/authConfig");
+const {GetAuthConfig} = require("./utils/authConfig");
 const {RegisterIam} = require("./middlewares/iamAuthenticate");
 const {RequestLogSerializers} = require("./loggers/requestLog");
 
-// AUTH_MODE=legacy|iam, read once here. Throws (and the server does not start) when iam mode misses a variable
+// The sign-in settings, read once here. Throws (and the server does not start) when a variable is missing
 const authConfig = GetAuthConfig();
 
 // Create Server
@@ -37,21 +36,9 @@ const app = require("fastify")({
   logger: pino({serializers: RequestLogSerializers}, stream),
 });
 
-// CORS and sign-in, by AUTH_MODE
-let authenticate;
-if (authConfig.mode === AUTH_MODE_IAM) {
-  // CORS of the SDK for the frontend host only (instead of @fastify/cors), the sign-in routes at /api/auth
-  // and the hook that checks the access token of VTK IAM
-  authenticate = RegisterIam(app, authConfig.iam);
-} else {
-  // Apply CORS middleware globally
-  app.register(cors, {
-    origin: "*",
-    methods: ["GET", "POST", "PUT", "DELETE"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
-  });
-}
+// CORS of the SDK for the frontend host only, the sign-in routes at /api/auth and the hook that checks the
+// access token of VTK IAM
+const authenticate = RegisterIam(app, authConfig.iam);
 
 // Rate-Limit
 app.register(rateLimit, {
@@ -88,7 +75,7 @@ app.register(fastifySwaggerUi, swaggerUiOptions);
 app.get("/", async (req, res) => {
   res.send("Task Management V1 Backend");
 });
-app.register(allRouter, {prefix: "/api", authMode: authConfig.mode, authenticate});
+app.register(allRouter, {prefix: "/api", authenticate});
 
 // Run the server!
 app.ready(() => {

@@ -4,11 +4,9 @@ const Module = require("node:module");
 const path = require("node:path");
 const jwt = require("jsonwebtoken");
 
-// Test-only secrets; the real .env is never loaded here
-process.env.ACCESS_TOKEN = "test-access-token-secret";
-process.env.REFRESH_TOKEN = "test-refresh-token-secret";
-process.env.EXPIRES_ACCESS_TOKEN = "15m";
-process.env.EXPIRES_REFRESH_TOKEN = "7d";
+// The route rules, on their own. The sign-in is a stand-in hook: what VTK IAM's hook does is tested in
+// iam-mode.test.js. The stand-in reads a token signed with this test-only secret
+const TEST_TOKEN_SECRET = "test-token-secret";
 
 // Put a fake module into the require cache so the code under test loads it instead of the real one
 const stubSourceModule = (relativePath, fakeExports) => {
@@ -83,20 +81,26 @@ const fakeDatabase = {
 stubSourceModule("connection/database.connection.js", fakeDatabase);
 stubSourceModule("loggers/loggers.config.js", {error() {}, warn() {}, info() {}});
 
-const VerifyToken = require("../src/middlewares/verifyToken");
 const allRouter = require("../src/routes/routes");
 
-const signAccessToken = (email, role) => jwt.sign({name: "test", email, role}, process.env.ACCESS_TOKEN, {expiresIn: "15m"});
+// Sets req.user the way the IAM hook does: the role (and so isAdmin) comes with the token
+const authenticate = async (req, res) => {
+  try {
+    const token = String(req.headers.authorization || "").replace(/^Bearer /, "");
+    const {name, email, role} = jwt.verify(token, TEST_TOKEN_SECRET, {algorithms: ["HS256"]});
+    req.user = {name, email, role, isAdmin: role === 1};
+  } catch {
+    return res.status(401).send({code: 401, message: "Unauthorized"});
+  }
+};
+
+const signAccessToken = (email, role) => jwt.sign({name: "test", email, role}, TEST_TOKEN_SECRET, {expiresIn: "15m"});
 const bearer = (token) => ({authorization: `Bearer ${token}`});
 const adminHeaders = () => bearer(signAccessToken(ADMIN_EMAIL, 1));
 const userHeaders = () => bearer(signAccessToken(USER_EMAIL, 0));
 
-const base64Url = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-const unsignedToken = (payload) => `${base64Url({alg: "none", typ: "JWT"})}.${base64Url(payload)}.`;
-
-// Queries other than the "current role" lookup made by the authorization hooks
-const queriesAfterRoleLookup = () =>
-  fakeDatabase.queries.filter(({sql}) => !/SELECT role FROM "user" WHERE email = \$1 LIMIT 1/.test(sql));
+// The queries a route ran. The role comes with the token, so the authorization hooks read nothing
+const routeQueries = () => fakeDatabase.queries;
 
 const taskBody = (id) => ({
   id,
@@ -120,7 +124,6 @@ const projectBody = {
 // Every route the frontend offers to admins only
 const adminOnlyRoutes = [
   {method: "DELETE", url: "/api/user", payload: {id: USER_ID}},
-  {method: "PUT", url: "/api/user/changerole", payload: {email: OTHER_USER_EMAIL, role: 1}},
   {method: "POST", url: "/api/project", payload: projectBody},
   {method: "PUT", url: "/api/project", payload: projectBody},
   {method: "DELETE", url: "/api/project", payload: {id: PROJECT_ID}},
@@ -134,8 +137,7 @@ let app;
 
 before(async () => {
   app = require("fastify")();
-  app.get("/whoami", {onRequest: [VerifyToken]}, async (req) => req.user);
-  app.register(allRouter, {prefix: "/api"});
+  app.register(allRouter, {prefix: "/api", authenticate});
   await app.ready();
 });
 
@@ -145,88 +147,21 @@ after(async () => {
 
 beforeEach(() => fakeDatabase.reset());
 
-describe("VerifyToken", () => {
-  const expectUnauthorized = async (headers) => {
-    const response = await app.inject({method: "GET", url: "/api/task", headers});
-    assert.equal(response.statusCode, 401);
-    assert.equal(response.json().code, 401);
-    assert.equal(fakeDatabase.queries.length, 0, "nothing may run after a failed token check");
-  };
-
-  it("answers a missing Authorization header with one 401", async () => {
-    await expectUnauthorized({});
-  });
-
-  it("answers a malformed Authorization header with 401", async () => {
-    await expectUnauthorized({authorization: signAccessToken(ADMIN_EMAIL, 1)});
-    await expectUnauthorized({authorization: "Bearer"});
-    await expectUnauthorized({authorization: "Bearer "});
-    await expectUnauthorized({authorization: "Bearer not-a-jwt"});
-  });
-
-  it("refuses a token with a bad signature", async () => {
-    await expectUnauthorized(bearer(jwt.sign({name: "test", email: ADMIN_EMAIL, role: 1}, "another-secret")));
-  });
-
-  it("refuses a refresh token used as an access token", async () => {
-    await expectUnauthorized(bearer(jwt.sign({name: "test", email: ADMIN_EMAIL, role: 1}, process.env.REFRESH_TOKEN)));
-  });
-
-  it("refuses alg none and any algorithm other than HS256", async () => {
-    await expectUnauthorized(bearer(unsignedToken({name: "test", email: ADMIN_EMAIL, role: 1})));
-    await expectUnauthorized(
-      bearer(jwt.sign({name: "test", email: ADMIN_EMAIL, role: 1}, process.env.ACCESS_TOKEN, {algorithm: "HS512"})),
-    );
-  });
-
-  it("refuses an expired access token", async () => {
-    await expectUnauthorized(
-      bearer(jwt.sign({name: "test", email: ADMIN_EMAIL, role: 1}, process.env.ACCESS_TOKEN, {expiresIn: -10})),
-    );
-  });
-
-  it("attaches name, email and role of a valid access token to the request", async () => {
-    const response = await app.inject({method: "GET", url: "/whoami", headers: userHeaders()});
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(response.json(), {name: "test", email: USER_EMAIL, role: 0});
-  });
-});
-
 describe("Admin-only routes", () => {
   for (const route of adminOnlyRoutes) {
     it(`${route.method} ${route.url} answers a normal user with 403 and runs nothing`, async () => {
       const response = await app.inject({...route, headers: userHeaders()});
       assert.equal(response.statusCode, 403);
       assert.deepEqual(response.json(), {code: 403, message: "Forbidden"});
-      assert.deepEqual(queriesAfterRoleLookup(), []);
+      assert.deepEqual(routeQueries(), []);
     });
 
     it(`${route.method} ${route.url} lets an admin through`, async () => {
       const response = await app.inject({...route, headers: adminHeaders()});
       assert.equal(response.statusCode, 200, response.body);
-      assert.ok(queriesAfterRoleLookup().length > 0);
+      assert.ok(routeQueries().length > 0);
     });
   }
-
-  it("uses the current role in the database, not the role inside the token", async () => {
-    // Was an admin at sign-in, is a normal user now
-    fakeDatabase.roleByEmail[ADMIN_EMAIL] = 0;
-    fakeDatabase.roleByEmail[OTHER_USER_EMAIL] = 1;
-    const demoted = await app.inject({method: "GET", url: "/api/task", headers: adminHeaders()});
-    assert.equal(demoted.statusCode, 403);
-
-    // Was a normal user at sign-in, is an admin now
-    fakeDatabase.roleByEmail[USER_EMAIL] = 1;
-    const promoted = await app.inject({method: "GET", url: "/api/task", headers: userHeaders()});
-    assert.equal(promoted.statusCode, 200);
-  });
-
-  it("answers a deleted account that still holds an admin token with 403", async () => {
-    delete fakeDatabase.roleByEmail[ADMIN_EMAIL];
-    const response = await app.inject({method: "DELETE", url: "/api/user", payload: {id: USER_ID}, headers: adminHeaders()});
-    assert.equal(response.statusCode, 403);
-    assert.deepEqual(queriesAfterRoleLookup(), []);
-  });
 });
 
 describe("Routes limited to the caller's own data", () => {
@@ -234,17 +169,17 @@ describe("Routes limited to the caller's own data", () => {
     it(`GET ${url}/:email answers a normal user asking for another user with 403`, async () => {
       const response = await app.inject({method: "GET", url: `${url}/${OTHER_USER_EMAIL}`, headers: userHeaders()});
       assert.equal(response.statusCode, 403);
-      assert.deepEqual(queriesAfterRoleLookup(), []);
+      assert.deepEqual(routeQueries(), []);
     });
 
     it(`GET ${url}/:email lets a normal user read their own data and an admin read anyone's`, async () => {
       const own = await app.inject({method: "GET", url: `${url}/${USER_EMAIL}`, headers: userHeaders()});
       assert.equal(own.statusCode, 200);
-      assert.deepEqual(queriesAfterRoleLookup().at(-1).params, [USER_EMAIL]);
+      assert.deepEqual(routeQueries().at(-1).params, [USER_EMAIL]);
 
       const admin = await app.inject({method: "GET", url: `${url}/${OTHER_USER_EMAIL}`, headers: adminHeaders()});
       assert.equal(admin.statusCode, 200);
-      assert.deepEqual(queriesAfterRoleLookup().at(-1).params, [OTHER_USER_EMAIL]);
+      assert.deepEqual(routeQueries().at(-1).params, [OTHER_USER_EMAIL]);
     });
   }
 
@@ -256,7 +191,7 @@ describe("Routes limited to the caller's own data", () => {
       headers: userHeaders(),
     });
     assert.equal(other.statusCode, 403);
-    assert.deepEqual(queriesAfterRoleLookup(), []);
+    assert.deepEqual(routeQueries(), []);
 
     const own = await app.inject({
       method: "PUT",
@@ -303,71 +238,41 @@ describe("Routes limited to the caller's own data", () => {
 
   it("GET /api/user gives a normal user only their own row and an admin every row", async () => {
     await app.inject({method: "GET", url: "/api/user", headers: userHeaders()});
-    const userQuery = queriesAfterRoleLookup().at(-1);
+    const userQuery = routeQueries().at(-1);
     assert.match(userQuery.sql, /WHERE email = \$1/);
     assert.deepEqual(userQuery.params, [USER_EMAIL]);
 
     await app.inject({method: "GET", url: "/api/user", headers: adminHeaders()});
-    assert.ok(!/WHERE/.test(queriesAfterRoleLookup().at(-1).sql));
+    assert.ok(!/WHERE/.test(routeQueries().at(-1).sql));
   });
 
   it("GET /api/user/:id gives a normal user only their own row", async () => {
     await app.inject({method: "GET", url: `/api/user/${USER_ID}`, headers: userHeaders()});
-    const userQuery = queriesAfterRoleLookup().at(-1);
+    const userQuery = routeQueries().at(-1);
     assert.match(userQuery.sql, /WHERE id = \$1 AND email = \$2/);
     assert.deepEqual(userQuery.params, [USER_ID, USER_EMAIL]);
   });
 
   it("GET /api/project and /api/project/:id give a normal user only the projects they have a task in", async () => {
     await app.inject({method: "GET", url: "/api/project", headers: userHeaders()});
-    const listQuery = queriesAfterRoleLookup().at(-1);
+    const listQuery = routeQueries().at(-1);
     assert.match(listQuery.sql, /WHERE a\.user_mail = \$1/);
     assert.deepEqual(listQuery.params, [USER_EMAIL]);
 
     await app.inject({method: "GET", url: `/api/project/${PROJECT_ID}`, headers: userHeaders()});
-    const oneQuery = queriesAfterRoleLookup().at(-1);
+    const oneQuery = routeQueries().at(-1);
     assert.match(oneQuery.sql, /a\.user_mail = \$2/);
     assert.deepEqual(oneQuery.params, [PROJECT_ID, USER_EMAIL]);
 
     await app.inject({method: "GET", url: "/api/project", headers: adminHeaders()});
-    assert.ok(!/WHERE/.test(queriesAfterRoleLookup().at(-1).sql));
+    assert.ok(!/WHERE/.test(routeQueries().at(-1).sql));
   });
 
   it("GET /api/task/:id gives a normal user only their own task", async () => {
     await app.inject({method: "GET", url: `/api/task/${OWN_TASK_ID}`, headers: userHeaders()});
-    const taskQuery = queriesAfterRoleLookup().at(-1);
+    const taskQuery = routeQueries().at(-1);
     assert.match(taskQuery.sql, /a\."user_mail" = \$2/);
     assert.deepEqual(taskQuery.params, [OWN_TASK_ID, USER_EMAIL]);
-  });
-});
-
-describe("PUT /api/user/changerole", () => {
-  const changeRole = (email, role) =>
-    app.inject({method: "PUT", url: "/api/user/changerole", payload: {email, role}, headers: adminHeaders()});
-  const roleUpdates = () => fakeDatabase.queries.filter(({sql}) => /UPDATE "user" SET role/.test(sql));
-
-  it("refuses to turn the last admin into a normal user", async () => {
-    const response = await changeRole(ADMIN_EMAIL, 0);
-    assert.equal(response.statusCode, 400);
-    assert.equal(response.json().message, "Cannot remove the last admin");
-    assert.deepEqual(roleUpdates(), []);
-  });
-
-  it("lets an admin step down while another admin remains", async () => {
-    fakeDatabase.roleByEmail[OTHER_USER_EMAIL] = 1;
-    const response = await changeRole(ADMIN_EMAIL, 0);
-    assert.equal(response.statusCode, 200);
-    assert.deepEqual(roleUpdates()[0].params, ["0", ADMIN_EMAIL]);
-  });
-
-  it("promotes a normal user and refuses a role other than 0 or 1", async () => {
-    const promoted = await changeRole(OTHER_USER_EMAIL, 1);
-    assert.equal(promoted.statusCode, 200);
-    assert.deepEqual(roleUpdates()[0].params, ["1", OTHER_USER_EMAIL]);
-
-    const invalid = await changeRole(OTHER_USER_EMAIL, 2);
-    assert.equal(invalid.statusCode, 400);
-    assert.equal(roleUpdates().length, 1);
   });
 });
 
@@ -403,7 +308,7 @@ describe("DELETE /api/user", () => {
     const response = await deleteUser([ADMIN_ID, OTHER_USER_ID]);
     assert.equal(response.statusCode, 400);
     assert.equal(response.json().message, "Wrong format uuid");
-    assert.deepEqual(queriesAfterRoleLookup(), []);
+    assert.deepEqual(routeQueries(), []);
     assert.deepEqual(userDeletes(), []);
   });
 
@@ -414,9 +319,9 @@ describe("DELETE /api/user", () => {
     assert.ok(!fakeDatabase.queries.some(({sql}) => /COUNT/.test(sql)));
   });
 
-  it("answers a normal user with 403 before any query beyond the role lookup", async () => {
+  it("answers a normal user with 403 before any query", async () => {
     const response = await deleteUser(ADMIN_ID, userHeaders());
     assert.equal(response.statusCode, 403);
-    assert.deepEqual(queriesAfterRoleLookup(), []);
+    assert.deepEqual(routeQueries(), []);
   });
 });

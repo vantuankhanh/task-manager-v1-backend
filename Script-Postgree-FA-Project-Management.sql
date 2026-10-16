@@ -23,7 +23,6 @@ CREATE TABLE public.Task (
 CREATE TABLE public.User (
     Id uuid default uuid_generate_v4() NOT NULL,
     Email character varying(50) DEFAULT NULL::character varying,
-    Password character varying(100) DEFAULT NULL::character varying,
     Name character varying(50) DEFAULT NULL::character varying,
     Role smallint
 );
@@ -35,10 +34,10 @@ CREATE TABLE public.User (
 
 
 INSERT INTO public.user
-("email", "password", "name", "role")
+("email", "name", "role")
 VALUES
-('admin@gmail.com','$2b$10$AQFCuCPJh5/n7t/a2MwzI.eic8ZMfQxSxT6GI6ivDcTJan9bLH7Zy', 'admin', '1'),
-('test@gmail.com','$2b$10$/A1xjClqHMOn9F.lHBm1bekWgK.TTDeJ25.sPfNrzRb1WsPj3bSh.', 'test', '0');
+('admin@gmail.com', 'admin', '1'),
+('test@gmail.com', 'test', '0');
 
 
 
