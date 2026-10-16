@@ -1,8 +1,8 @@
 # Moving sign-in to VTK IAM
 
-This guide is for the owner of task-manager v1. It moves sign-in from the app's own email and password to VTK IAM (`https://auth.vantuankhanh.com`), and back if needed.
+This guide is for the owner of task-manager v1. It moved sign-in from the app's own email and password to VTK IAM (`https://auth.vantuankhanh.com`) on 2026-10-08. The old sign-in was removed on 2026-10-16 (milestone M9 of VTK IAM, see "Removing the old sign-in" at the end); the sections before that are kept as the record of the move.
 
-The switch is one variable, `AUTH_MODE`, read when the server starts:
+Until M9 the switch was one variable, `AUTH_MODE`, read when the server starts:
 
 | `AUTH_MODE` | Sign-in | Tokens |
 | --- | --- | --- |
@@ -250,7 +250,9 @@ What to know:
 - A session that simply expires at the IAM is not reported.
 - To turn it off: clear the URI in the IAM console. The table can stay.
 
-## Rollback
+## Rollback (until 2026-10-16)
+
+No longer possible since M9: the old sign-in is gone from the code and the passwords from the database. What it was:
 
 1. Set `AUTH_MODE=legacy` in `.env` (or remove the line) and restart PM2.
 2. Check `GET /api/auth/config` answers `{"mode":"legacy"}`. The frontend shows the old sign-in on its next load.
@@ -270,6 +272,19 @@ DROP INDEX IF EXISTS public.user_email_lower_unique;
 ALTER TABLE public."user" DROP COLUMN IF EXISTS iam_sub;
 ```
 
-## After the move is stable
+## Removing the old sign-in (M9, 2026-10-16)
 
-Once two weeks have passed without a rollback: remove the legacy endpoints and the `ACCESS_TOKEN` and `REFRESH_TOKEN` secrets, and delete `export.json` and `mapping.csv`.
+The owner ended the two weeks of observation early on 2026-10-16. This version:
+
+- has no `AUTH_MODE`: the `IAM_*`, `APP_BASE_URL`, `FRONTEND_BASE_URL` and `COOKIE_SECRET` variables are always required, and `ACCESS_TOKEN`, `REFRESH_TOKEN`, `EXPIRES_ACCESS_TOKEN` and `EXPIRES_REFRESH_TOKEN` are no longer read;
+- no longer serves `POST /api/login`, `GET /api/refresh-token`, `POST /api/user`, `PUT /api/user/changerole` and `GET /api/auth/config` (they answered 410 or the mode before; now 404);
+- creates new rows without a password, and comes with `Script-Migration-Remove-Password.sql`, which drops the `password` column.
+
+The IAM keeps its own copy of each imported password hash until the person signs in once (then it is replaced by an Argon2id hash) or 90 days pass (BRL-10); that copy is removed at the IAM, not here.
+
+Order on the server:
+
+1. Deploy the frontend first: the new frontend no longer asks `GET /api/auth/config`, and works against the running backend.
+2. Deploy the backend (`pnpm install --frozen-lockfile`, restart PM2).
+3. Run `Script-Migration-Remove-Password.sql` after the restart: the code before it still wrote the column.
+4. Remove `AUTH_MODE`, `ACCESS_TOKEN`, `REFRESH_TOKEN`, `EXPIRES_ACCESS_TOKEN` and `EXPIRES_REFRESH_TOKEN` from `.env`, and restart PM2 once more. Delete `export.json` and `mapping.csv` if they are still on the server.
