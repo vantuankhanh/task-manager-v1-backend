@@ -1,0 +1,4 @@
+allowBuilds:
+  # Its postinstall only prints the v2 maintenance-mode notice; the SDK
+  # works the same without it.
+  aws-sdk: false
