@@ -43,10 +43,13 @@ const fakeDatabase = {
   endedSessions: [],
   // Set by a test to make every statement on iam_ended_session fail, as when the table is missing
   endedSessionWriteError: null,
+  // Set by a test to make the anonymization of a deleted account fail
+  accountDeletionError: null,
   reset() {
     this.queries = [];
     this.endedSessions = [];
     this.endedSessionWriteError = null;
+    this.accountDeletionError = null;
     this.users = [
       {id: ADMIN_ID, name: "admin", email: "admin@gmail.com", role: 1, iam_sub: ADMIN_SUBJECT},
       {
@@ -64,7 +67,7 @@ const fakeDatabase = {
     this.taskOwnerById = {[OWN_TASK_ID]: "tom&amp;jerry@gmail.com", [OTHER_TASK_ID]: "admin@gmail.com"};
   },
   publicColumns: ({id, name, email, role, iam_sub, iam_session_id}) => ({id, name, email, role, iam_sub, iam_session_id}),
-  // The statements of utils/iamLocalUser.js that refresh an email
+  // The statements of utils/iamLocalUser.js that refresh an email, and of utils/iamAccountDeletion.js
   answerProfileStatements(sql, params) {
     if (/UPDATE "user" SET iam_session_id = \$2, iam_profile_refreshed_at = NOW\(\)\s+WHERE id = \$1 AND \(iam_profile_refreshed_at IS NULL OR iam_profile_refreshed_at < NOW\(\) - make_interval\(secs => \$3\)\)/.test(sql)) {
       const [userId, sessionId, intervalSeconds] = params;
@@ -91,6 +94,33 @@ const fakeDatabase = {
           if (userMail === oldEmail) this.taskOwnerById[taskId] = newEmail;
         }
       }
+      return [];
+    }
+    if (/WITH target AS \(\s+SELECT id, email, REPLACE\(id::text, '-', ''\) \|\| '@deleted.invalid' AS placeholder FROM "user" WHERE iam_sub = \$1/.test(sql)) {
+      if (this.accountDeletionError) {
+        throw this.accountDeletionError;
+      }
+      assert.match(sql, /UPDATE task SET user_mail = target.placeholder FROM target WHERE task.user_mail = target.email/);
+      return this.users
+        .filter((user) => user.iam_sub === params[0])
+        .map((user) => {
+          const placeholder = `${user.id.replaceAll("-", "")}@deleted.invalid`;
+          for (const [taskId, userMail] of Object.entries(this.taskOwnerById)) {
+            if (userMail === user.email) this.taskOwnerById[taskId] = placeholder;
+          }
+          Object.assign(user, {
+            name: "Deleted account",
+            email: placeholder,
+            role: 0,
+            iam_sub: null,
+            iam_session_id: null,
+            iam_profile_refreshed_at: null,
+          });
+          return {id: user.id};
+        });
+    }
+    if (/DELETE FROM iam_ended_session WHERE iam_sub = \$1/.test(sql)) {
+      this.endedSessions = this.endedSessions.filter((endedSession) => endedSession.iam_sub !== params[0]);
       return [];
     }
     return null;
@@ -648,6 +678,86 @@ describe("iam mode: the email at the IAM", () => {
     }
     assert.equal(fakeDatabase.taskOwnerById[OWN_TASK_ID], "tom.after@example.com");
     assert.equal(userBySubject(ADMIN_SUBJECT).email, "admin@gmail.com");
+  });
+});
+
+describe("iam mode: a deleted IAM account", () => {
+  const ACCOUNT_DELETED_EVENT = "urn:vtk-iam:event:user-deleted";
+  // The notice VTK IAM posts to the account deletion URI of the application (RFC 8417)
+  const signAccountDeletionNotice = (subject, overrides = {}) =>
+    jwt.sign(
+      {events: {[ACCOUNT_DELETED_EVENT]: {deleted_at: Math.floor(Date.now() / 1000)}}},
+      overrides.privateKey || signingKeys.privateKey,
+      {
+        algorithm: "RS256",
+        keyid: "k1",
+        header: {typ: overrides.type || "secevent+jwt"},
+        issuer: fakeIam.issuer,
+        audience: overrides.audience || "taskmanager-v1",
+        subject,
+        jwtid: crypto.randomUUID(),
+        expiresIn: overrides.expiresIn || "5m",
+      },
+    );
+  const postNotice = (payload, contentType = "application/secevent+jwt") =>
+    iamApp.inject({method: "POST", url: "/api/iam/account-deleted", headers: {"content-type": contentType}, payload});
+  const placeholderOf = (userId) => `${userId.replaceAll("-", "")}@deleted.invalid`;
+
+  it("leaves a row that names nobody, and the tasks under it", async () => {
+    fakeDatabase.endedSessions.push({session_id: "ended", iam_sub: MEMBER_SUBJECT, ended_at: new Date(), remember_until: new Date(Date.now() + 3600000)});
+    const notice = signAccountDeletionNotice(MEMBER_SUBJECT);
+    const response = await postNotice(notice);
+    assert.equal(response.statusCode, 202);
+
+    const anonymized = fakeDatabase.users.find((user) => user.id === MEMBER_ID);
+    assert.deepEqual(fakeDatabase.publicColumns(anonymized), {
+      id: MEMBER_ID,
+      name: "Deleted account",
+      email: placeholderOf(MEMBER_ID),
+      role: 0,
+      iam_sub: null,
+      iam_session_id: null,
+    });
+    assert.ok(placeholderOf(MEMBER_ID).length <= 50, "fits task.user_mail and \"user\".email");
+    assert.equal(fakeDatabase.taskOwnerById[OWN_TASK_ID], placeholderOf(MEMBER_ID));
+    assert.equal(fakeDatabase.taskOwnerById[OTHER_TASK_ID], "admin@gmail.com");
+    assert.equal(fakeDatabase.endedSessions.length, 0);
+    assert.equal(userBySubject(ADMIN_SUBJECT).name, "admin");
+
+    // The IAM sends it again, and the same for an account that never used this application: both are done
+    assert.equal((await postNotice(notice)).statusCode, 202);
+    assert.equal((await postNotice(signAccountDeletionNotice(NEW_SUBJECT))).statusCode, 202);
+    assert.equal(fakeDatabase.users.length, 3, "nothing is created");
+
+    // Whoever signs in with that account later is a new user, not the anonymized row
+    const after = await iamApp.inject({method: "GET", url: "/api/me", headers: memberHeaders()});
+    assert.notEqual(after.statusCode, 200);
+  });
+
+  it("needs no cookie, no token and no Origin, and answers 400 to anything but a notice for this application", async () => {
+    for (const forgedNotice of [
+      "not-a-notice",
+      signAccountDeletionNotice(MEMBER_SUBJECT, {privateKey: otherSigningKeys.privateKey}),
+      signAccountDeletionNotice(MEMBER_SUBJECT, {type: "logout+jwt"}),
+      // The IAM posts every notice to every application: this one is another application's
+      signAccountDeletionNotice(MEMBER_SUBJECT, {audience: "kavauni"}),
+      signAccountDeletionNotice(MEMBER_SUBJECT, {expiresIn: "-2m"}),
+      // Tokens the IAM did sign, for another purpose
+      signLogoutToken(MEMBER_SUBJECT, "session-1"),
+      signAccessToken(MEMBER_SUBJECT, ["member"]),
+    ]) {
+      assert.equal((await postNotice(forgedNotice)).statusCode, 400);
+    }
+    const asJson = await postNotice(JSON.stringify({token: signAccountDeletionNotice(MEMBER_SUBJECT)}), "application/json");
+    assert.equal(asJson.statusCode, 400);
+    assert.equal(userBySubject(MEMBER_SUBJECT).email, "tom&amp;jerry@gmail.com");
+  });
+
+  it("answers 500 when the row cannot be changed, so that the IAM tries again", async () => {
+    fakeDatabase.accountDeletionError = new Error("the database is down");
+    assert.equal((await postNotice(signAccountDeletionNotice(MEMBER_SUBJECT))).statusCode, 500);
+    fakeDatabase.accountDeletionError = null;
+    assert.equal((await postNotice(signAccountDeletionNotice(MEMBER_SUBJECT))).statusCode, 202);
   });
 });
 

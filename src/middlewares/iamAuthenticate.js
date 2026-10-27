@@ -2,6 +2,7 @@ const logger = require("../loggers/loggers.config");
 const {ROLE_ADMIN} = require("./authorize");
 const {FindOrCreateLocalUser, IamLocalUserError} = require("../utils/iamLocalUser");
 const iamEndedSessions = require("../utils/iamEndedSessions");
+const {ForgetDeletedAccount} = require("../utils/iamAccountDeletion");
 
 // Role key of the IAM application "taskmanager-v1" that means admin; any other role is a normal user
 const IAM_ADMIN_ROLE = "admin";
@@ -14,6 +15,9 @@ const FRONTEND_SIGN_IN_PATH = "/auth/login";
 const FRONTEND_SIGN_IN_FAILED_PATH = "/auth/access";
 // The only prompt GET /api/auth/login passes on to the IAM (OpenID Connect prompt=login)
 const PROMPT_LOGIN = "login";
+// Where the IAM posts the notice of a deleted account; registered at the IAM as the account deletion URI
+const ACCOUNT_DELETED_PATH = "/api/iam/account-deleted";
+const ACCOUNT_DELETION_BODY_LIMIT_BYTES = 16 * 1024;
 
 // Name and email of the signed-in account, from the IAM userinfo endpoint (scopes profile and email).
 // Needed the first time an account is seen, then once per IAM session to refresh the email
@@ -80,12 +84,38 @@ const CreateIamAuthenticate = ({verifier, issuer, fetchUserinfo = fetchUserinfoF
   };
 };
 
+// The notice of the IAM that an account was deleted. 202 once the row of that account names nobody, also for an
+// account that never used this application; 400 only for a token that fails the check. Anything else (the keys of
+// the IAM could not be fetched, the database failed) is a 500, and the IAM sends the notice again
+const ReceiveAccountDeletion = async (accountDeletionVerifier, req, res) => {
+  const {InvalidAccountDeletionError} = require("@vtk-iam/node");
+  let subject;
+  try {
+    const deletion = await accountDeletionVerifier.verify(typeof req.body === "string" ? req.body : "");
+    subject = deletion.subject;
+  } catch (error) {
+    if (error instanceof InvalidAccountDeletionError) {
+      return res.status(400).send({code: 400, message: "invalid_request"});
+    }
+    logger.error(error);
+    return res.status(500).send({code: 500, message: "Internal Server Error"});
+  }
+  try {
+    const anonymizedUserId = await ForgetDeletedAccount(subject);
+    logger.info(`IAM account ${subject} deleted: ${anonymizedUserId ? `user ${anonymizedUserId} anonymized` : "no user"}`);
+    return res.status(202).send();
+  } catch (error) {
+    logger.error(error);
+    return res.status(500).send({code: 500, message: "Internal Server Error"});
+  }
+};
+
 // Wires the sign-in through VTK IAM into the app: CORS for the frontend host in front of everything, the sign-in routes
 // of the SDK at /api/auth, and the hook the API routes use to authenticate. Returns that hook.
 // overrides is for tests only: keySet (a local key set instead of the JWKS of the IAM) and fetchUserinfo
 const RegisterIam = (app, iamConfig, overrides = {}) => {
   // Loaded here and not at the top: the SDK ships ES modules, which require() loads on Node.js 22.12 or later
-  const {createAccessTokenVerifier} = require("@vtk-iam/node");
+  const {createAccessTokenVerifier, createAccountDeletionVerifier, securityEventContentType} = require("@vtk-iam/node");
   const {authRoutesPlugin, corsHook} = require("@vtk-iam/node/fastify");
 
   // The same options for both, so CORS and the sign-in routes allow the same origins
@@ -120,6 +150,23 @@ const RegisterIam = (app, iamConfig, overrides = {}) => {
   // GET /api/auth/login, GET /api/auth/callback, POST /api/auth/refresh, POST /api/auth/logout and,
   // called by the IAM and not by a browser, POST /api/auth/backchannel-logout
   app.register(authRoutesPlugin, {...iamOptions, prefix: AUTH_PREFIX});
+
+  // POST /api/iam/account-deleted, called by the IAM and not by a browser: no cookie, no token. It takes the whole
+  // body as a signed notice (RFC 8417, RFC 8935), so its content type gets a string parser, in a scope of its own
+  // that leaves the rest of the API on JSON
+  const accountDeletionVerifier = createAccountDeletionVerifier({
+    issuer: iamConfig.issuer,
+    clientId: iamConfig.clientId,
+    keySet: overrides.keySet,
+  });
+  app.register(async (scope) => {
+    scope.addContentTypeParser(
+      securityEventContentType,
+      {parseAs: "string", bodyLimit: ACCOUNT_DELETION_BODY_LIMIT_BYTES},
+      (req, body, done) => done(null, body),
+    );
+    scope.post(ACCOUNT_DELETED_PATH, (req, res) => ReceiveAccountDeletion(accountDeletionVerifier, req, res));
+  });
 
   const verifier = createAccessTokenVerifier({
     issuer: iamConfig.issuer,
