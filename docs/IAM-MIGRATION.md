@@ -288,3 +288,24 @@ Order on the server:
 2. Deploy the backend (`pnpm install --frozen-lockfile`, restart PM2).
 3. Run `Script-Migration-Remove-Password.sql` after the restart: the code before it still wrote the column.
 4. Remove `AUTH_MODE`, `ACCESS_TOKEN`, `REFRESH_TOKEN`, `EXPIRES_ACCESS_TOKEN` and `EXPIRES_REFRESH_TOKEN` from `.env`, and restart PM2 once more. Delete `export.json` and `mapping.csv` if they are still on the server.
+
+## Changed email and deleted accounts (2026-10-27)
+
+Milestones M12 and M13 of VTK IAM (IAM TODO board items 1.56 and 1.65; `docs/INTEGRATION.md` of the IAM, sections 8.4 and 9). This version needs `@vtk-iam/node` 0.6.0 (in `vendor/`).
+
+**Changed email.** A person can change their email on the account page of the IAM; their `sub` stays the same. Each `"user"` row remembers which IAM session last refreshed its email, and when (`iam_session_id`, `iam_profile_refreshed_at`, `Script-Migration-IAM-Profile-Refresh.sql`). When a token of another session arrives, which happens after a sign-in, the backend asks `/oauth2/userinfo` once and, when the IAM has verified the new address, changes `"user".email` and the `task.user_mail` of that user's tasks in one statement, since the email is what ties tasks to their user. The name stays. A row is asked about at most once every 15 minutes, so two devices or the first requests of a page do not put the IAM in front of every call; a new email therefore shows here at the next sign-in, or 15 minutes after it at the latest. Nothing refuses the request: when the IAM does not answer, the stored email stays and the session asks again after 15 minutes; an address that is not verified, longer than 50 characters once escaped, or held by another row in any letter case is not taken, and the next session tries again.
+
+**Deleted accounts.** Thirty days after a person asks the IAM to delete their account, `iamctl account purge` deletes it and posts a signed notice (`application/secevent+jwt`) to `POST /api/iam/account-deleted`. The backend checks it with the SDK and anonymizes the row of that `sub` (the owner's choice, 2026-10-27): name `Deleted account`, email `<id without dashes>@deleted.invalid` (48 characters, unique, and on a domain no IAM account can have, so the row is never linked again), role 0, no `iam_sub`; the tasks of the row move to that placeholder in the same statement and stay in their projects. The `iam_ended_session` rows of the `sub` are deleted. It answers 202, also for a `sub` that never used this application and for a repeated notice; 400 for a token that fails the check; 500 when the IAM's keys cannot be fetched or the database fails, so that the IAM sends the notice again. The route needs no cookie, no token and no Origin.
+
+Order on the server:
+
+1. Run the migration. It is additive, safe to run twice, and the version running now does not read the columns:
+
+   ```bash
+   psql "<connection>" -v ON_ERROR_STOP=1 -f Script-Migration-IAM-Profile-Refresh.sql
+   ```
+
+2. Deploy this version (`pnpm install --frozen-lockfile`, restart PM2).
+3. In the IAM console, application `taskmanager-v1`, tab URI, set "URI nhận thông báo tài khoản đã xóa" to `https://api-taskmanager-v1.vantuankhanh.com/api/iam/account-deleted` and save.
+
+Verify: `curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/secevent+jwt' --data x https://api-taskmanager-v1.vantuankhanh.com/api/iam/account-deleted` prints `400`.
