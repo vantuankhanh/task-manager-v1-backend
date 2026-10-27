@@ -1,4 +1,4 @@
-const {describe, it, before, after, beforeEach} = require("node:test");
+const {describe, it, before, after, beforeEach, afterEach} = require("node:test");
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const http = require("node:http");
@@ -59,10 +59,47 @@ const fakeDatabase = {
       // Imported into the IAM, but the mapping was never loaded: no iam_sub yet. Stored with capital letters
       {id: IMPORTED_ID, name: "Minh", email: "Minh@Example.com", role: 0, iam_sub: null},
     ];
+    // No row has refreshed its email from the IAM yet: the columns of Script-Migration-IAM-Profile-Refresh.sql are empty
+    this.users.forEach((user) => Object.assign(user, {iam_session_id: null, iam_profile_refreshed_at: null}));
     this.taskOwnerById = {[OWN_TASK_ID]: "tom&amp;jerry@gmail.com", [OTHER_TASK_ID]: "admin@gmail.com"};
   },
-  publicColumns: ({id, name, email, role, iam_sub}) => ({id, name, email, role, iam_sub}),
+  publicColumns: ({id, name, email, role, iam_sub, iam_session_id}) => ({id, name, email, role, iam_sub, iam_session_id}),
+  // The statements of utils/iamLocalUser.js that refresh an email
+  answerProfileStatements(sql, params) {
+    if (/UPDATE "user" SET iam_session_id = \$2, iam_profile_refreshed_at = NOW\(\)\s+WHERE id = \$1 AND \(iam_profile_refreshed_at IS NULL OR iam_profile_refreshed_at < NOW\(\) - make_interval\(secs => \$3\)\)/.test(sql)) {
+      const [userId, sessionId, intervalSeconds] = params;
+      const refreshedBefore = Date.now() - intervalSeconds * 1000;
+      const claimedUsers = this.users.filter(
+        (user) => user.id === userId && (user.iam_profile_refreshed_at === null || user.iam_profile_refreshed_at < refreshedBefore),
+      );
+      claimedUsers.forEach((user) => Object.assign(user, {iam_session_id: sessionId, iam_profile_refreshed_at: Date.now()}));
+      return claimedUsers.map(({id}) => ({id}));
+    }
+    if (/UPDATE "user" SET iam_session_id = \$2 WHERE id = \$1/.test(sql)) {
+      this.users.filter((user) => user.id === params[0]).forEach((user) => (user.iam_session_id = params[1]));
+      return [];
+    }
+    if (/SELECT id FROM "user" WHERE LOWER\(email\) = LOWER\(\$1\) AND id <> \$2 LIMIT 1/.test(sql)) {
+      return this.users.filter((user) => user.email.toLowerCase() === params[0].toLowerCase() && user.id !== params[1]).map(({id}) => ({id}));
+    }
+    if (/WITH changed_user AS \(UPDATE "user" SET email = \$2 WHERE id = \$1 AND email = \$3 RETURNING id\)\s+UPDATE task SET user_mail = \$2 WHERE user_mail = \$3/.test(sql)) {
+      const [userId, newEmail, oldEmail] = params;
+      const changedUsers = this.users.filter((user) => user.id === userId && user.email === oldEmail);
+      changedUsers.forEach((user) => (user.email = newEmail));
+      if (changedUsers.length > 0) {
+        for (const [taskId, userMail] of Object.entries(this.taskOwnerById)) {
+          if (userMail === oldEmail) this.taskOwnerById[taskId] = newEmail;
+        }
+      }
+      return [];
+    }
+    return null;
+  },
   answer(sql, params) {
+    const profileAnswer = this.answerProfileStatements(sql, params);
+    if (profileAnswer) {
+      return profileAnswer;
+    }
     if (/INSERT INTO iam_ended_session \(session_id, iam_sub, ended_at, remember_until\)/.test(sql)) {
       if (this.endedSessionWriteError) {
         throw this.endedSessionWriteError;
@@ -92,18 +129,26 @@ const fakeDatabase = {
     if (/FROM "user" WHERE iam_sub = \$1 LIMIT 1/.test(sql)) {
       return this.users.filter((user) => user.iam_sub === params[0]).map(this.publicColumns);
     }
-    if (/UPDATE "user" SET iam_sub = \$1 WHERE LOWER\(email\) = LOWER\(\$2\) AND iam_sub IS NULL/.test(sql)) {
+    if (/UPDATE "user" SET iam_sub = \$1, iam_session_id = \$3, iam_profile_refreshed_at = NOW\(\)\s+WHERE LOWER\(email\) = LOWER\(\$2\) AND iam_sub IS NULL/.test(sql)) {
       const matches = this.users.filter((user) => user.email.toLowerCase() === params[1].toLowerCase() && user.iam_sub === null);
-      matches.forEach((user) => (user.iam_sub = params[0]));
+      matches.forEach((user) => Object.assign(user, {iam_sub: params[0], iam_session_id: params[2], iam_profile_refreshed_at: Date.now()}));
       return matches.map(this.publicColumns);
     }
-    if (/INSERT INTO "user" \(name, email, role, iam_sub\)/.test(sql)) {
+    if (/INSERT INTO "user" \(name, email, role, iam_sub, iam_session_id, iam_profile_refreshed_at\)/.test(sql)) {
       assert.match(sql, /ON CONFLICT DO NOTHING/);
-      const [name, email, role, iamSubject] = params;
+      const [name, email, role, iamSubject, sessionId] = params;
       if (this.users.some((user) => user.iam_sub === iamSubject || user.email.toLowerCase() === email.toLowerCase())) {
         return [];
       }
-      const createdUser = {id: crypto.randomUUID(), name, email, role, iam_sub: iamSubject};
+      const createdUser = {
+        id: crypto.randomUUID(),
+        name,
+        email,
+        role,
+        iam_sub: iamSubject,
+        iam_session_id: sessionId,
+        iam_profile_refreshed_at: Date.now(),
+      };
       this.users.push(createdUser);
       return [this.publicColumns(createdUser)];
     }
@@ -537,6 +582,72 @@ describe("iam mode: local user", () => {
     });
     assert.equal(demoted.json().role, 0);
     assert.equal(userBySubject(ADMIN_SUBJECT).role, 0);
+  });
+});
+
+describe("iam mode: the email at the IAM", () => {
+  const SESSION_ONE = "session-one";
+  const SESSION_TWO = "session-two";
+  const memberInSession = (sessionId) => bearer(signAccessToken(MEMBER_SUBJECT, ["member"], {claims: {sid: sessionId}}));
+  const askMe = async (sessionId) => {
+    const response = await iamApp.inject({method: "GET", url: "/api/me", headers: memberInSession(sessionId)});
+    assert.equal(response.statusCode, 200);
+    return response.json();
+  };
+  // As if the email was last refreshed an hour ago
+  const makeLastRefreshOld = () => (userBySubject(MEMBER_SUBJECT).iam_profile_refreshed_at = Date.now() - 60 * 60 * 1000);
+  const setMemberProfile = (profile) => (fakeIam.profileBySubject[MEMBER_SUBJECT] = profile);
+  afterEach(() => delete fakeIam.profileBySubject[MEMBER_SUBJECT]);
+
+  it("is copied with the tasks of the user once per IAM session, and the name stays", async () => {
+    setMemberProfile({name: "Renamed at the IAM", email: "Tom.New@Example.com", email_verified: true});
+    const refreshed = await askMe(SESSION_ONE);
+    assert.equal(refreshed.email, "Tom.New@Example.com");
+    assert.equal(refreshed.name, "Tom & Jerry");
+    assert.equal(fakeDatabase.taskOwnerById[OWN_TASK_ID], "Tom.New@Example.com", "the task follows its user");
+    assert.equal(fakeDatabase.taskOwnerById[OTHER_TASK_ID], "admin@gmail.com");
+    assert.equal(fakeIam.userinfoRequests, 1);
+
+    await askMe(SESSION_ONE);
+    // Another session within the quarter of an hour, as a second device: no new question
+    await askMe(SESSION_TWO);
+    assert.equal(fakeIam.userinfoRequests, 1);
+    makeLastRefreshOld();
+    await askMe(SESSION_TWO);
+    assert.equal(fakeIam.userinfoRequests, 2);
+
+    // The member's own task is still theirs by the email /api/me now gives
+    const ownTask = await iamApp.inject({
+      method: "PUT",
+      url: "/api/task",
+      headers: memberInSession(SESSION_TWO),
+      payload: {...taskBody(OWN_TASK_ID), user_mail: "Tom.New@Example.com"},
+    });
+    assert.notEqual(ownTask.statusCode, 403);
+  });
+
+  it("stays when the IAM cannot answer, and when the new one is unverified, another user's or too long", async () => {
+    fakeIam.userinfoStatus = 500;
+    setMemberProfile({name: "x", email: "tom.after@example.com", email_verified: true});
+    assert.equal((await askMe(SESSION_ONE)).email, "tom&jerry@gmail.com");
+    assert.equal(userBySubject(MEMBER_SUBJECT).iam_session_id, null, "the session is forgotten, so it is asked again");
+    fakeIam.userinfoStatus = 200;
+    assert.equal((await askMe(SESSION_ONE)).email, "tom&jerry@gmail.com", "not before the quarter of an hour");
+    makeLastRefreshOld();
+    assert.equal((await askMe(SESSION_ONE)).email, "tom.after@example.com");
+
+    const longLocalPart = "a".repeat(45);
+    for (const [sessionId, profile] of [
+      ["session-unverified", {name: "x", email: "tom.unverified@example.com", email_verified: false}],
+      ["session-taken", {name: "x", email: "ADMIN@gmail.com", email_verified: true}],
+      ["session-too-long", {name: "x", email: `${longLocalPart}@example.com`, email_verified: true}],
+    ]) {
+      setMemberProfile(profile);
+      makeLastRefreshOld();
+      assert.equal((await askMe(sessionId)).email, "tom.after@example.com", sessionId);
+    }
+    assert.equal(fakeDatabase.taskOwnerById[OWN_TASK_ID], "tom.after@example.com");
+    assert.equal(userBySubject(ADMIN_SUBJECT).email, "admin@gmail.com");
   });
 });
 

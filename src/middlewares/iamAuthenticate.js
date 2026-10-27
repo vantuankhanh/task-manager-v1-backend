@@ -16,7 +16,7 @@ const FRONTEND_SIGN_IN_FAILED_PATH = "/auth/access";
 const PROMPT_LOGIN = "login";
 
 // Name and email of the signed-in account, from the IAM userinfo endpoint (scopes profile and email).
-// Only needed the first time an account is seen; afterwards the local row answers
+// Needed the first time an account is seen, then once per IAM session to refresh the email
 const fetchUserinfoFromIam = async (issuer, accessToken) => {
   const response = await fetch(`${issuer.replace(/\/+$/, "")}/oauth2/userinfo`, {
     headers: {Authorization: `Bearer ${accessToken}`},
@@ -50,6 +50,7 @@ const CreateIamAuthenticate = ({verifier, issuer, fetchUserinfo = fetchUserinfoF
     try {
       const localUser = await FindOrCreateLocalUser({
         subject,
+        sessionId: req.iamAuth.sessionId,
         role,
         loadProfile: async () => {
           const accessToken = extractAccessToken(req.headers.authorization, req.headers.cookie, ACCESS_TOKEN_COOKIE);
