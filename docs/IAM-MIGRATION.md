@@ -54,7 +54,7 @@ The request log (the PM2 output) records requests under `/api/auth/` without the
 ## Before you start
 
 - Node.js 22.12 or later on the server (the SDK `@vtk-iam/node` is loaded with `require()`; the server runs 24.14.0).
-- The SDK is installed from `vendor/vtk-iam-node-0.6.0.tgz` in this repository, so `pnpm install` needs no access to the IAM repository.
+- The SDK is installed from `vendor/vtk-iam-node-0.7.0.tgz` in this repository, so `pnpm install` needs no access to the IAM repository.
 - A backup of the app database.
 - VTK IAM is running and you can sign in to its console as a super admin.
 - A VTK IAM build that contains the commit `fix(hostedui): allow a separate frontend origin in form-action` (main at or after that commit). The sign-in page of the IAM carries a `Content-Security-Policy` with `form-action`, and Chrome and Edge apply it to every redirect that follows the password form: IAM, then the API host (`/api/auth/callback`), then the frontend host. From that commit on the IAM lists the origin of the redirect URI and the origins of the post-logout redirect URIs, so registering the post-logout redirect URI of step 1 is what lets the sign-in reach the frontend. On an older build the browser stays on the IAM sign-in page after a correct password (a browser already signed in at the IAM is not affected, which hides it). The first browser test of step 9, in a private window, shows which build is running.
@@ -309,3 +309,20 @@ Order on the server:
 3. In the IAM console, application `taskmanager-v1`, tab URI, set "URI nhận thông báo tài khoản đã xóa" to `https://api-taskmanager-v1.vantuankhanh.com/api/iam/account-deleted` and save.
 
 Verify: `curl -s -o /dev/null -w '%{http_code}\n' -X POST -H 'Content-Type: application/secevent+jwt' --data x https://api-taskmanager-v1.vantuankhanh.com/api/iam/account-deleted` prints `400`.
+
+## Personal data notice (2026-11-22)
+
+ADR-020 of VTK IAM (FR-AUTHZ-10; `docs/INTEGRATION.md` of the IAM, sections 5.3, 8.4 and 8.7): each application serves its own notice, and the IAM asks people to accept it before it signs them in to the application. This version needs `@vtk-iam/node` 0.7.0 (in `vendor/`).
+
+- **The notice** is the public page `/privacy` of the frontend (Vietnamese, `?lang=en` for English), version `2026-11-22` in `src/pages/privacy/privacyNoticeLocation.ts` of the frontend. It describes the tables above and the anonymization below: change it in the same change when either changes.
+- **Withdrawal.** A person can withdraw the consent on the IAM account page. The IAM then posts `urn:vtk-iam:event:application-consent-withdrawn` to the same `POST /api/iam/account-deleted`, delivered by the next daily `iamctl account purge`. The SDK accepts both events and reports `reason` (`account_deleted` or `consent_withdrawn`); the backend does the same anonymization for both (section "Changed email and deleted accounts" above) and logs only which of the two it was. A token with both events or with neither is refused with 400. The SDK 0.6.0 answered 400 to a withdrawal, so this version must be deployed before the IAM gets a notice version for `taskmanager-v1`.
+- **Declining.** A person who declines the notice at the IAM comes back with `error=access_denied`, so the callback sends the browser to `/auth/access?reason=access_denied`, which now also offers "Read the notice".
+- **SDK 0.7.0** also passes `acr_values` and `max_age` of `GET /api/auth/login` on to the IAM as a step-up request (FR-MFA-05 of VTK IAM); this application does not use step-up, and such a request can only make the sign-in stronger.
+
+Order on the server:
+
+1. Deploy the backend (`pnpm install --frozen-lockfile`, restart PM2) and the frontend.
+2. Check: `curl -s -o /dev/null -w '%{http_code}\n' https://taskmanagerv1.vantuankhanh.com/privacy` prints `200`, and the `400` check of the account deletion route above still holds.
+3. Only then, in the IAM console, application `taskmanager-v1`, general tab, "Thông báo dữ liệu cá nhân": set the URL `https://taskmanagerv1.vantuankhanh.com/privacy` and the version `2026-11-22`. People are asked within about ten minutes.
+
+To change the notice later: edit the page and bump the version constant, deploy, then set the new version in the console.
