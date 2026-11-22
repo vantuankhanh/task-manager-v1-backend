@@ -84,15 +84,21 @@ const CreateIamAuthenticate = ({verifier, issuer, fetchUserinfo = fetchUserinfoF
   };
 };
 
-// The notice of the IAM that an account was deleted. 202 once the row of that account names nobody, also for an
-// account that never used this application; 400 only for a token that fails the check. Anything else (the keys of
-// the IAM could not be fetched, the database failed) is a 500, and the IAM sends the notice again
+// The notice of the IAM that an account was deleted, or that the person withdrew the consent to the personal data
+// notice of this application (ADR-020 section 5 of VTK IAM, its docs/INTEGRATION.md section 8.7). Both ask for the
+// same anonymization, so the reason the SDK reports ("account_deleted" or "consent_withdrawn") is only logged; the
+// page /privacy of the frontend says the same for both. 202 once the row of that account names nobody, also for an
+// account that never used this application; 400 only for a token that fails the check, including one with an
+// unknown event or with both events. Anything else (the keys of the IAM could not be fetched, the database failed)
+// is a 500, and the IAM sends the notice again
 const ReceiveAccountDeletion = async (accountDeletionVerifier, req, res) => {
   const {InvalidAccountDeletionError} = require("@vtk-iam/node");
   let subject;
+  let reason;
   try {
     const deletion = await accountDeletionVerifier.verify(typeof req.body === "string" ? req.body : "");
     subject = deletion.subject;
+    reason = deletion.reason;
   } catch (error) {
     if (error instanceof InvalidAccountDeletionError) {
       return res.status(400).send({code: 400, message: "invalid_request"});
@@ -102,7 +108,10 @@ const ReceiveAccountDeletion = async (accountDeletionVerifier, req, res) => {
   }
   try {
     const anonymizedUserId = await ForgetDeletedAccount(subject);
-    logger.info(`IAM account ${subject} deleted: ${anonymizedUserId ? `user ${anonymizedUserId} anonymized` : "no user"}`);
+    const noticeDescription = reason === "consent_withdrawn" ? "withdrew its consent" : "deleted";
+    logger.info(
+      `IAM account ${subject} ${noticeDescription}: ${anonymizedUserId ? `user ${anonymizedUserId} anonymized` : "no user"}`,
+    );
     return res.status(202).send();
   } catch (error) {
     logger.error(error);
