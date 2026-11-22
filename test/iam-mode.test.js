@@ -683,10 +683,14 @@ describe("iam mode: the email at the IAM", () => {
 
 describe("iam mode: a deleted IAM account", () => {
   const ACCOUNT_DELETED_EVENT = "urn:vtk-iam:event:user-deleted";
-  // The notice VTK IAM posts to the account deletion URI of the application (RFC 8417)
+  // Sent when the person withdraws the consent to the notice of this application (ADR-020 section 5 of VTK IAM)
+  const CONSENT_WITHDRAWN_EVENT = "urn:vtk-iam:event:application-consent-withdrawn";
+  const nowInSeconds = () => Math.floor(Date.now() / 1000);
+  // The notice VTK IAM posts to the account deletion URI of the application (RFC 8417). overrides.events replaces
+  // the "events" claim as a whole.
   const signAccountDeletionNotice = (subject, overrides = {}) =>
     jwt.sign(
-      {events: {[ACCOUNT_DELETED_EVENT]: {deleted_at: Math.floor(Date.now() / 1000)}}},
+      {events: overrides.events || {[ACCOUNT_DELETED_EVENT]: {deleted_at: nowInSeconds()}}},
       overrides.privateKey || signingKeys.privateKey,
       {
         algorithm: "RS256",
@@ -751,6 +755,54 @@ describe("iam mode: a deleted IAM account", () => {
     const asJson = await postNotice(JSON.stringify({token: signAccountDeletionNotice(MEMBER_SUBJECT)}), "application/json");
     assert.equal(asJson.statusCode, 400);
     assert.equal(userBySubject(MEMBER_SUBJECT).email, "tom&amp;jerry@gmail.com");
+  });
+
+  it("treats a withdrawn consent like a deletion: the same row and tasks, and a repeat or an unknown account is also 202", async () => {
+    fakeDatabase.endedSessions.push({session_id: "ended", iam_sub: MEMBER_SUBJECT, ended_at: new Date(), remember_until: new Date(Date.now() + 3600000)});
+    const withdrawal = signAccountDeletionNotice(MEMBER_SUBJECT, {events: {[CONSENT_WITHDRAWN_EVENT]: {withdrawn_at: nowInSeconds()}}});
+    const response = await postNotice(withdrawal);
+    assert.equal(response.statusCode, 202);
+
+    const anonymized = fakeDatabase.users.find((user) => user.id === MEMBER_ID);
+    assert.deepEqual(fakeDatabase.publicColumns(anonymized), {
+      id: MEMBER_ID,
+      name: "Deleted account",
+      email: placeholderOf(MEMBER_ID),
+      role: 0,
+      iam_sub: null,
+      iam_session_id: null,
+    });
+    assert.equal(fakeDatabase.taskOwnerById[OWN_TASK_ID], placeholderOf(MEMBER_ID));
+    assert.equal(fakeDatabase.taskOwnerById[OTHER_TASK_ID], "admin@gmail.com");
+    assert.equal(fakeDatabase.endedSessions.length, 0);
+    assert.equal(userBySubject(ADMIN_SUBJECT).name, "admin");
+
+    // The IAM sends it again, and the same for an account that never used this application: both are done
+    assert.equal((await postNotice(withdrawal)).statusCode, 202);
+    const unknownAccountWithdrawal = signAccountDeletionNotice(NEW_SUBJECT, {events: {[CONSENT_WITHDRAWN_EVENT]: {withdrawn_at: nowInSeconds()}}});
+    assert.equal((await postNotice(unknownAccountWithdrawal)).statusCode, 202);
+    assert.equal(fakeDatabase.users.length, 3, "nothing is created");
+  });
+
+  it("answers 400 and changes nothing for a token with both events, only an unknown event, or no events", async () => {
+    const unusableNotices = [
+      // Exactly one of the two events is allowed: a token naming both was not written by the IAM
+      signAccountDeletionNotice(MEMBER_SUBJECT, {
+        events: {
+          [ACCOUNT_DELETED_EVENT]: {deleted_at: nowInSeconds()},
+          [CONSENT_WITHDRAWN_EVENT]: {withdrawn_at: nowInSeconds()},
+        },
+      }),
+      signAccountDeletionNotice(MEMBER_SUBJECT, {events: {"urn:vtk-iam:event:something-else": {at: nowInSeconds()}}}),
+      signAccountDeletionNotice(MEMBER_SUBJECT, {events: {}}),
+    ];
+    for (const unusableNotice of unusableNotices) {
+      assert.equal((await postNotice(unusableNotice)).statusCode, 400);
+    }
+    const unchanged = userBySubject(MEMBER_SUBJECT);
+    assert.equal(unchanged.email, "tom&amp;jerry@gmail.com");
+    assert.equal(unchanged.id, MEMBER_ID);
+    assert.equal(fakeDatabase.taskOwnerById[OWN_TASK_ID], "tom&amp;jerry@gmail.com");
   });
 
   it("answers 500 when the row cannot be changed, so that the IAM tries again", async () => {
