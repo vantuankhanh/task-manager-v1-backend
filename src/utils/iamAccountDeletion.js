@@ -1,6 +1,6 @@
 const QueryDatabase = require("./queryDatabase");
 
-// Deleted IAM accounts (FR-ID-09 of VTK IAM, its docs/INTEGRATION.md section 8.4). Thirty days after a person asks
+// Deleted IAM accounts (FR-ID-09 of VTK IAM, its docs/INTEGRATION.md section 8.4). Fourteen days after a person asks
 // the IAM to delete their account, the IAM deletes it and posts a signed notice to POST /api/iam/account-deleted.
 // The product owner chose on 2026-10-27 to anonymize the user and keep the tasks: the admin keeps the history of
 // the work of each project. The same runs when the person withdraws the consent to the personal data notice of this
