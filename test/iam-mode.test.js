@@ -913,7 +913,9 @@ describe("iam mode: sign-in routes of the SDK", () => {
       "prompt=login&prompt=none",
       "prompt[]=login",
       `prompt=${encodeURIComponent("login&redirect_uri=https://evil.example/")}`,
-      "max_age=0&login_hint=someone%40evil.example&redirect_uri=https%3A%2F%2Fevil.example%2F&scope=openid",
+      // max_age and acr_values are not in this list: since @vtk-iam/node 0.7.0 the SDK passes them on as a step-up
+      // request (FR-MFA-05 of VTK IAM), which can only make the sign-in of the browser stronger
+      "login_hint=someone%40evil.example&redirect_uri=https%3A%2F%2Fevil.example%2F&scope=openid",
     ];
     for (const refusedQuery of refusedQueries) {
       const response = await iamApp.inject({method: "GET", url: `/api/auth/login?returnTo=/tasks&${refusedQuery}`});
