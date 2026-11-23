@@ -83,7 +83,7 @@ app.ready(() => {
     console.log(`App 🖥️ is running ❤️ on port:: ${process.env.PORT}`);
     if (err) {
       console.warn("Error start server 🔥 :: ", err);
-      fastify.log.error(err);
+      app.log.error(err);
       process.exit(1);
     }
   });
