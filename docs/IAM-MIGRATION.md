@@ -49,7 +49,7 @@ A sign-in can fail on the callback, where the browser is on the API host. The ap
 | `{FRONTEND_BASE_URL}/auth/access?reason=access_denied` | The IAM refused the person: no role in this invite-only application |
 | `{FRONTEND_BASE_URL}/auth/access?reason=sign_in_failed` | Anything else: the sign-in cookie is missing or older than 10 minutes, the state does not match, the code exchange failed |
 
-The request log (the PM2 output) records requests under `/api/auth/` without their query string, so the one-time code and the state of the callback are never written to it. Every other request is logged as before.
+The request log (the PM2 output) records requests under `/api/auth/` without their query string, so the one-time code and the state of the callback are never written to it. When Fastify matched a route, the log line holds the route pattern (for example `/api/gettaskbyuser/:name`) instead of the raw path, so an email address or a user name in the path never reaches the log (D49 (c) of VTK IAM); a request that matched no route is logged with its raw path.
 
 ## Before you start
 

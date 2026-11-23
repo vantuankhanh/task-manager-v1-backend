@@ -2,7 +2,7 @@ const {describe, it} = require("node:test");
 const assert = require("node:assert/strict");
 const {Writable} = require("node:stream");
 const pino = require("pino");
-const {UrlForLog, RequestLogSerializers} = require("../src/loggers/requestLog");
+const {UrlForLog, PathForLog, RequestLogSerializers} = require("../src/loggers/requestLog");
 
 describe("request log", () => {
   it("drops the query string of requests under /api/auth/", () => {
@@ -62,6 +62,73 @@ describe("request log", () => {
     assert.ok(!writtenLog.includes("secret-state"));
     const requestUrls = logLines.map((line) => JSON.parse(line)).flatMap((entry) => (entry.req ? [entry.req.url] : []));
     assert.ok(requestUrls.includes("/api/auth/callback"));
-    assert.ok(requestUrls.includes("/api/task?page=2"));
+    // A matched route is logged as its pattern, so the query string of /api/task is gone as well (D49 (c))
+    assert.ok(requestUrls.includes("/api/task"));
+  });
+
+  it("logs the route pattern when a route matched, the raw path otherwise", () => {
+    assert.equal(
+      PathForLog({url: "/api/getprojectbyuser/a@b.com", routeOptions: {url: "/api/getprojectbyuser/:email"}}),
+      "/api/getprojectbyuser/:email",
+    );
+    assert.equal(PathForLog({url: "/nothing-here?x=1", routeOptions: {}}), "/nothing-here?x=1");
+    assert.equal(PathForLog({url: "/api/auth/nothing?code=one-time-code"}), "/api/auth/nothing");
+  });
+
+  it("keeps the email and the name of a parameterised route out of every log line (D49 (c))", async () => {
+    const logLines = [];
+    const logStream = new Writable({
+      write(chunk, encoding, done) {
+        logLines.push(String(chunk));
+        done();
+      },
+    });
+    const app = require("fastify")({logger: pino({serializers: RequestLogSerializers}, logStream)});
+    // The same prefix as src/server.js, because the pattern in the log must carry it
+    app.register(
+      async (prefixedApp) => {
+        prefixedApp.get("/getprojectbyuser/:email", async () => []);
+        prefixedApp.get("/gettaskbyuser/:name", async () => {
+          throw new Error("failed on purpose, to get an error line with the request in it");
+        });
+      },
+      {prefix: "/api"},
+    );
+    await app.ready();
+
+    await app.inject({method: "GET", url: "/api/getprojectbyuser/person.one@example.com"});
+    await app.inject({method: "GET", url: "/api/gettaskbyuser/Nguyen%20Van%20Person?page=2"});
+    await app.close();
+
+    const writtenLog = logLines.join("");
+    assert.ok(!writtenLog.includes("person.one"));
+    assert.ok(!writtenLog.includes("example.com"));
+    assert.ok(!writtenLog.includes("Nguyen"));
+    const requestUrls = logLines.map((line) => JSON.parse(line)).flatMap((entry) => (entry.req ? [entry.req.url] : []));
+    assert.ok(requestUrls.includes("/api/getprojectbyuser/:email"));
+    assert.ok(requestUrls.includes("/api/gettaskbyuser/:name"));
+  });
+
+  it("falls back to the raw path, without the query under /api/auth/, when no route matched", async () => {
+    const logLines = [];
+    const logStream = new Writable({
+      write(chunk, encoding, done) {
+        logLines.push(String(chunk));
+        done();
+      },
+    });
+    const app = require("fastify")({logger: pino({serializers: RequestLogSerializers}, logStream)});
+    await app.ready();
+
+    const missingResponse = await app.inject({method: "GET", url: "/api/auth/unknown?code=one-time-code"});
+    await app.inject({method: "GET", url: "/api/missing?page=2"});
+    await app.close();
+
+    assert.equal(missingResponse.statusCode, 404);
+    const requestUrls = logLines.map((line) => JSON.parse(line)).flatMap((entry) => (entry.req ? [entry.req.url] : []));
+    assert.ok(requestUrls.includes("/api/auth/unknown"));
+    assert.ok(requestUrls.includes("/api/missing?page=2"));
+    // The "incoming request" line has no query under /api/auth/; Fastify's own "not found" message is not a req field
+    assert.ok(!requestUrls.some((url) => url.includes("one-time-code")));
   });
 });
