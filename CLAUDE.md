@@ -1,6 +1,6 @@
 # CLAUDE.md – Task Manager v1 backend (task-manager-v1-backend)
 
-Cập nhật lần cuối: 2026-11-23 (ADR-020 của VTK IAM: `@vtk-iam/node` 0.7.0 trong `vendor/`, route `POST /api/iam/account-deleted` nhận thêm sự kiện rút lại đồng ý, thêm test cho sự kiện này và các trường hợp bị từ chối; chưa commit).
+Cập nhật lần cuối: 2026-11-23 (D49 (c) của VTK IAM xong trong working tree, chưa commit: nhật ký yêu cầu ghi mẫu route (ví dụ `/api/gettaskbyuser/:name`) thay cho đường dẫn thật khi có route khớp, thêm 3 test, sửa `fastify.log` thành `app.log` ở `src/server.js`; trước đó: ADR-020 của VTK IAM: `@vtk-iam/node` 0.7.0 trong `vendor/`, route `POST /api/iam/account-deleted` nhận thêm sự kiện rút lại đồng ý, thêm test cho sự kiện này và các trường hợp bị từ chối; chưa commit).
 
 ## 1. Quy tắc
 
@@ -15,7 +15,7 @@ Cập nhật lần cuối: 2026-11-23 (ADR-020 của VTK IAM: `@vtk-iam/node` 0.
 
 Fastify + PostgreSQL (`pg`), chạy dưới PM2. Đăng nhập chỉ qua VTK IAM bằng `@vtk-iam/node` (BFF, cookie httpOnly): `/api/auth/*`, `GET /api/me`; vai trò `admin` lấy từ access token của ứng dụng IAM `taskmanager-v1`. API: `https://api-taskmanager-v1.vantuankhanh.com`. Tài liệu: `Readme.md`, `docs/IAM-MIGRATION.md`.
 
-Lệnh: `pnpm test` (hoặc `node --test "test/**/*.test.js"`; database giả và IAM giả, không cần mạng hay `.env`; hiện 101 test), `pnpm start` (production).
+Lệnh: `pnpm test` (hoặc `node --test "test/**/*.test.js"`; database giả và IAM giả, không cần mạng hay `.env`; hiện 104 test), `pnpm start` (production).
 
 ## 3. Tiến độ
 
